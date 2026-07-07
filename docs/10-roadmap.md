@@ -55,16 +55,16 @@
 
 产物：
 
-- `docs/requirements.md`
-- `docs/architecture.md`
-- `docs/mvp.md`
-- `docs/ui-design.md`
-- `docs/database-design.md`
-- `docs/api.md`
-- `docs/build-execution.md`
-- `docs/security.md`
-- `docs/deployment.md`
-- `docs/roadmap.md`
+- `docs/01-requirements.md`
+- `docs/02-architecture.md`
+- `docs/03-mvp.md`
+- `docs/04-ui-design.md`
+- `docs/05-database-design.md`
+- `docs/06-api.md`
+- `docs/07-build-execution.md`
+- `docs/08-security.md`
+- `docs/09-deployment.md`
+- `docs/10-roadmap.md`
 
 完成标准：
 
@@ -553,10 +553,9 @@ MVP 至少覆盖：
 
 v0.1.0 完成需要满足：
 
-- `docs/mvp.md` 的完成定义全部满足。
-- `docs/deployment.md` 的部署验收全部满足。
+- `docs/03-mvp.md` 的完成定义全部满足。
+- `docs/09-deployment.md` 的部署验收全部满足。
 - 本机构建和 SSH 构建各至少通过一次完整闭环。
 - 构建失败、推送失败、取消和超时场景可验证。
 - 用户可以从后台完成主机、仓库、项目、版本、构建、日志、产物全流程。
 - GitHub Release 提供二进制包、Docker 镜像和部署说明。
-
