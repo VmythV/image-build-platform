@@ -1,0 +1,32 @@
+# OS and editor files
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs
+*.log
+logs/
+
+# Runtime data
+data/
+tmp/
+temp/
+
+# Build outputs
+dist/
+build/
+out/
+target/
+bin/
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Dependency caches
+node_modules/
+vendor/
+
