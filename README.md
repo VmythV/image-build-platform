@@ -40,8 +40,8 @@ It gives operators a management console for build hosts and registries, while gi
 - Select an image family or starting image first, such as Java, Python, Node.js, or MySQL.
 - Start from a base image and evolve it through version nodes.
 - Branch from any version to create a new image line.
-- Visualize versions and branches as a graph.
-- Open any node to inspect its Dockerfile, generated form config, description, build history, and produced artifacts.
+- Visualize versions and branches as a Git-style node graph.
+- Keep each node compact, then open any node to inspect its Dockerfile, generated form config, description, build history, and produced artifacts.
 - Compare Dockerfile changes between two versions.
 
 ### Build Workspace
