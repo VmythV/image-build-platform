@@ -7,9 +7,11 @@
 [![status](https://img.shields.io/badge/status-planning-blue)](#roadmap)
 [![docs](https://img.shields.io/badge/docs-requirements-green)](docs/requirements.md)
 [![architecture](https://img.shields.io/badge/docs-architecture-green)](docs/architecture.md)
+[![mvp](https://img.shields.io/badge/docs-mvp-green)](docs/mvp.md)
+[![ui](https://img.shields.io/badge/docs-ui_design-green)](docs/ui-design.md)
 [![deployment](https://img.shields.io/badge/deploy-binary%20%7C%20docker-lightgrey)](#deployment-model)
 
-中文说明见本文档下方。Detailed requirements live in [docs/requirements.md](docs/requirements.md), and architecture decisions live in [docs/architecture.md](docs/architecture.md).
+中文说明见本文档下方。Detailed requirements live in [docs/requirements.md](docs/requirements.md), architecture decisions live in [docs/architecture.md](docs/architecture.md), MVP scope lives in [docs/mvp.md](docs/mvp.md), and UI design lives in [docs/ui-design.md](docs/ui-design.md).
 
 ---
 
@@ -98,7 +100,7 @@ Image Build Platform 是一个私有化镜像构建平台，目标是把构建�
 - 构建成功后推送到指定仓库。
 - 二进制部署和 Docker 部署。
 
-完整需求见 [docs/requirements.md](docs/requirements.md)，架构设计见 [docs/architecture.md](docs/architecture.md)。
+完整需求见 [docs/requirements.md](docs/requirements.md)，架构设计见 [docs/architecture.md](docs/architecture.md)，MVP 范围见 [docs/mvp.md](docs/mvp.md)，前端界面设计见 [docs/ui-design.md](docs/ui-design.md)。
 
 ## Roadmap
 
