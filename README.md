@@ -37,6 +37,7 @@ It gives operators a management console for build hosts and registries, while gi
 
 ### Version And Branch Graph
 
+- Select an image family or starting image first, such as Java, Python, Node.js, or MySQL.
 - Start from a base image and evolve it through version nodes.
 - Branch from any version to create a new image line.
 - Visualize versions and branches as a graph.
@@ -115,4 +116,3 @@ Image Build Platform 是一个私有化镜像构建平台，目标是把构建�
 ## Repository Status
 
 This repository currently contains the product requirements and README. Implementation code will be added after the architecture and technology stack are finalized.
-
