@@ -94,3 +94,15 @@
   - `deploy/systemd/image-build-platform.service`
   - `scripts`
 - checksums 文件生成成功。
+
+## 11. CI/CD
+
+- push 到 `main` 会运行 CI。
+- pull request 会运行 CI。
+- CI 包含 `make test`。
+- CI 包含 `make build`。
+- CI 校验所有 compose 文件。
+- CI 执行 Docker build smoke。
+- tag `v*` 会创建或更新 GitHub Release。
+- tag `v*` 会发布 Linux `amd64` 和 `arm64` 二进制包。
+- tag `v*` 会发布 GHCR 多架构镜像。

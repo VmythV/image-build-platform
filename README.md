@@ -5,6 +5,8 @@
 > The MVP implementation now includes the core local/SSH build loop: define a Dockerfile, choose a build host, stream logs, push the resulting image to a configured registry, and track the image artifact.
 
 [![status](https://img.shields.io/badge/status-mvp-green)](#roadmap)
+[![ci](https://github.com/VmythV/image-build-platform/actions/workflows/ci.yml/badge.svg)](https://github.com/VmythV/image-build-platform/actions/workflows/ci.yml)
+[![release](https://github.com/VmythV/image-build-platform/actions/workflows/release.yml/badge.svg)](https://github.com/VmythV/image-build-platform/actions/workflows/release.yml)
 [![docs](https://img.shields.io/badge/docs-requirements-green)](docs/01-requirements.md)
 [![architecture](https://img.shields.io/badge/docs-architecture-green)](docs/02-architecture.md)
 [![mvp](https://img.shields.io/badge/docs-mvp-green)](docs/03-mvp.md)
@@ -186,6 +188,15 @@ VERSION=v0.1.0 TARGET_OS=linux TARGET_ARCH=arm64 bash scripts/release.sh
 Release artifacts are written to `dist/release` with SHA-256 checksums.
 Each package includes the server binary, built frontend assets, docs, deploy examples, and operations scripts.
 
+Tag-based releases are automated through GitHub Actions:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+The release workflow builds Linux `amd64` and `arm64` tarballs, attaches checksums to the GitHub Release, and publishes a multi-architecture image to GHCR.
+
 Create a local backup:
 
 ```bash
@@ -229,10 +240,11 @@ Image Build Platform 是一个私有化镜像构建平台，目标是把构建�
 - Dockerfile editor, form builder, validation, diff, and Git-style version graph.
 - Build queue, scheduling, cancel/retry, log streaming, and artifact management.
 - Binary and Docker packaging with release scripts.
+- GitHub Actions CI, release assets, and GHCR publishing.
 - Remote agent mode.
 - Multi-architecture buildx support.
 - Git build context, SBOM, and vulnerability scanning.
 
 ## Repository Status
 
-This repository contains the MVP implementation: Go backend, React/Vite frontend, configuration loading, database migrations, authentication, build hosts, registries, image projects, version graphs, build tasks, real-time logs, artifact records, settings, audit logs, Docker files, release scripts, and deployment documentation.
+This repository contains the MVP implementation: Go backend, React/Vite frontend, configuration loading, database migrations, authentication, build hosts, registries, image projects, version graphs, build tasks, real-time logs, artifact records, settings, audit logs, Docker files, release scripts, GitHub Actions workflows, and deployment documentation.

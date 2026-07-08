@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VERSION="${VERSION:-dev}"
 TARGET_OS="${TARGET_OS:-$(go env GOOS)}"
 TARGET_ARCH="${TARGET_ARCH:-$(go env GOARCH)}"
+BUILD_WEB="${BUILD_WEB:-true}"
 APP_NAME="image-build-platform"
 PACKAGE_NAME="${APP_NAME}_${VERSION}_${TARGET_OS}_${TARGET_ARCH}"
 DIST_DIR="${ROOT_DIR}/dist/release"
@@ -13,8 +14,13 @@ PACKAGE_DIR="${DIST_DIR}/${PACKAGE_NAME}"
 rm -rf "${PACKAGE_DIR}"
 mkdir -p "${PACKAGE_DIR}/web" "${DIST_DIR}"
 
-echo "==> Building frontend"
-npm --prefix "${ROOT_DIR}/web" run build
+if [[ "${BUILD_WEB}" == "true" ]]; then
+  echo "==> Building frontend"
+  npm --prefix "${ROOT_DIR}/web" run build
+elif [[ ! -d "${ROOT_DIR}/web/dist" ]]; then
+  echo "web/dist not found; run with BUILD_WEB=true first" >&2
+  exit 1
+fi
 
 echo "==> Building backend ${TARGET_OS}/${TARGET_ARCH}"
 GO111MODULE=on CGO_ENABLED=0 GOOS="${TARGET_OS}" GOARCH="${TARGET_ARCH}" \

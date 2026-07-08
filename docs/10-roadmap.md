@@ -412,6 +412,29 @@
 - 推送失败和构建失败场景可排查。
 - release 包含 checksums。
 
+### M15 CI/CD 和发布自动化
+
+目标：
+
+- 把测试、构建、发布包和容器镜像发布纳入 GitHub Actions。
+
+任务：
+
+- 配置基础 CI。
+- 配置 release package smoke。
+- 配置 docker compose 配置校验。
+- 配置 Docker build smoke。
+- 配置 tag 触发的 GitHub Release。
+- 配置 GHCR 多架构镜像发布。
+- 配置 Dependabot 维护 GitHub Actions、Go module 和 npm 依赖。
+
+完成标准：
+
+- push 和 pull request 自动运行测试、构建、compose 校验和 Docker build smoke。
+- tag `v*` 自动生成 Linux amd64/arm64 二进制包和 checksums。
+- tag `v*` 自动发布 GHCR `version`、`sha-*` 和稳定版 `latest` tag。
+- workflow 只使用 GitHub token 和 GHCR，不依赖本地密钥。
+
 ## 4. 建议实现顺序
 
 严格顺序：
@@ -430,6 +453,7 @@
 12. M10 SSH 远程构建。
 13. M13 Dashboard、设置、帮助和审计。
 14. M14 打包、部署和验收。
+15. M15 CI/CD 和发布自动化。
 
 说明：
 
@@ -559,3 +583,4 @@ v0.1.0 完成需要满足：
 - 构建失败、推送失败、取消和超时场景可验证。
 - 用户可以从后台完成主机、仓库、项目、版本、构建、日志、产物全流程。
 - GitHub Release 提供二进制包、Docker 镜像和部署说明。
+- GitHub Actions CI 和 release workflow 可以从 tag 自动交付发布产物。

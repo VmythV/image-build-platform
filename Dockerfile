@@ -1,4 +1,4 @@
-FROM node:22-alpine AS web-builder
+FROM --platform=$BUILDPLATFORM node:22-alpine AS web-builder
 
 WORKDIR /src/web
 COPY web/package*.json ./
@@ -6,18 +6,21 @@ RUN npm ci
 COPY web/ ./
 RUN npm run build
 
-FROM golang:1.25-alpine AS backend-builder
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS backend-builder
 
 ARG VERSION=dev
+ARG TARGETOS=linux
+ARG TARGETARCH
 WORKDIR /src
 RUN apk add --no-cache git
 COPY go.mod go.sum ./
 RUN GO111MODULE=on go mod download
 COPY . .
 COPY --from=web-builder /src/web/dist ./web/dist
-RUN GO111MODULE=on CGO_ENABLED=0 GOOS=linux go build \
-    -ldflags="-s -w -X main.version=${VERSION}" \
-    -o /out/ibp-server ./cmd/ibp-server
+RUN target_arch="${TARGETARCH:-$(go env GOARCH)}" \
+    && GO111MODULE=on CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${target_arch}" go build \
+      -ldflags="-s -w -X main.version=${VERSION}" \
+      -o /out/ibp-server ./cmd/ibp-server
 
 FROM alpine:3.22
 
