@@ -62,6 +62,25 @@ func TestAuthSetupLoginMeLogout(t *testing.T) {
 	getJSON(t, router, http.MethodGet, "/api/v1/auth/me", "", sessionCookie, http.StatusUnauthorized, nil)
 }
 
+func TestDashboardSummaryRequiresAuth(t *testing.T) {
+	router := newAuthTestRouter(t)
+
+	getJSON(t, router, http.MethodGet, "/api/v1/dashboard/summary", "", nil, http.StatusUnauthorized, nil)
+
+	sessionCookie := initializeAdminAndLogin(t, router)
+	getJSON(t, router, http.MethodGet, "/api/v1/dashboard/summary", "", sessionCookie, http.StatusOK, func(body map[string]any) {
+		data := body["data"].(map[string]any)
+		builds := data["builds"].(map[string]any)
+		if builds["total"] != float64(0) {
+			t.Fatalf("expected zero builds in fresh dashboard, got %v", builds["total"])
+		}
+		hosts := data["hosts"].(map[string]any)
+		if hosts["total"] != float64(1) {
+			t.Fatalf("expected default local host in dashboard, got %v", hosts["total"])
+		}
+	})
+}
+
 func TestBuildHostsRequireAuthAndCRUD(t *testing.T) {
 	router := newAuthTestRouter(t)
 

@@ -1,18 +1,19 @@
 import { AppShell } from "@/components/layout/app-shell"
 import { Button } from "@/components/ui/button"
 import { getCurrentUser, getSetupStatus, logout, type User } from "@/lib/auth-api"
+import { ArtifactsPage } from "@/pages/artifacts/artifacts-page"
 import { LoginPage } from "@/pages/auth/login-page"
 import { SetupPage } from "@/pages/auth/setup-page"
 import { BuildHostsPage } from "@/pages/build-hosts/build-hosts-page"
 import { BuildTasksPage } from "@/pages/build-tasks/build-tasks-page"
 import { DashboardPage } from "@/pages/dashboard/dashboard-page"
+import { HelpPage } from "@/pages/help/help-page"
 import { ImageProjectsPage } from "@/pages/image-projects/image-projects-page"
 import { RegistriesPage } from "@/pages/registries/registries-page"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { type ReactNode, useState } from "react"
-import { ArtifactsPage } from "@/pages/artifacts/artifacts-page"
 
-export type AppView = "dashboard" | "build-hosts" | "registries" | "image-projects" | "build-tasks" | "artifacts"
+export type AppView = "dashboard" | "build-hosts" | "registries" | "image-projects" | "build-tasks" | "artifacts" | "help"
 
 export function App() {
   const queryClient = useQueryClient()
@@ -83,6 +84,7 @@ export function App() {
       {activeView === "image-projects" ? <ImageProjectsPage /> : null}
       {activeView === "build-tasks" ? <BuildTasksPage /> : null}
       {activeView === "artifacts" ? <ArtifactsPage /> : null}
+      {activeView === "help" ? <HelpPage /> : null}
     </AppShell>
   )
 }

@@ -18,6 +18,7 @@ import (
 	"github.com/VmythV/image-build-platform/internal/buildhost"
 	"github.com/VmythV/image-build-platform/internal/buildtask"
 	"github.com/VmythV/image-build-platform/internal/credential"
+	"github.com/VmythV/image-build-platform/internal/dashboard"
 	"github.com/VmythV/image-build-platform/internal/dockerfile"
 	"github.com/VmythV/image-build-platform/internal/imageartifact"
 	"github.com/VmythV/image-build-platform/internal/imageproject"
@@ -54,6 +55,7 @@ func New(opts Options) (http.Handler, error) {
 	var dockerfileRoutes http.Handler
 	var buildTaskRoutes http.Handler
 	var artifactRoutes http.Handler
+	var dashboardRoutes http.Handler
 	if opts.DB != nil {
 		service, err := auth.NewService(auth.ServiceOptions{
 			Repository: auth.NewRepository(opts.DB, opts.DriverName),
@@ -91,6 +93,7 @@ func New(opts Options) (http.Handler, error) {
 		registryRoutes = registry.NewHandler(registryService).Routes()
 		artifactRepo := imageartifact.NewRepository(opts.DB, opts.DriverName)
 		artifactRoutes = imageartifact.NewHandler(artifactRepo).Routes()
+		dashboardRoutes = dashboard.NewHandler(dashboard.NewRepository(opts.DB)).Routes()
 
 		imageProjectService := imageproject.NewService(
 			imageproject.NewRepository(opts.DB, opts.DriverName),
@@ -130,6 +133,12 @@ func New(opts Options) (http.Handler, error) {
 			r.Group(func(r chi.Router) {
 				r.Use(auth.Middleware(authHandler))
 				r.Mount("/build-hosts", buildHostRoutes)
+			})
+		}
+		if dashboardRoutes != nil {
+			r.Group(func(r chi.Router) {
+				r.Use(auth.Middleware(authHandler))
+				r.Mount("/dashboard", dashboardRoutes)
 			})
 		}
 		if registryRoutes != nil {

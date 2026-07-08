@@ -26,7 +26,7 @@ const navigation = [
   { id: "build-tasks", label: "Build Tasks", icon: ListChecks },
   { id: "artifacts", label: "Artifacts", icon: Image },
   { id: "settings", label: "Settings", icon: Settings, disabled: true },
-  { id: "help", label: "Help", icon: HelpCircle, disabled: true },
+  { id: "help", label: "Help", icon: HelpCircle },
 ]
 
 type AppShellProps = PropsWithChildren<{
@@ -44,6 +44,7 @@ const viewTitles: Record<AppView, { title: string; subtitle: string }> = {
   "image-projects": { title: "Image Projects", subtitle: "Root images, versions, and branches" },
   "build-tasks": { title: "Build Tasks", subtitle: "Queue, scheduling, cancel, and retry" },
   artifacts: { title: "Artifacts", subtitle: "Pushed image records and pull commands" },
+  help: { title: "Help", subtitle: "Operations guide and failure troubleshooting" },
 }
 
 export function AppShell({ children, activeView, user, logoutPending = false, onNavigate, onLogout }: AppShellProps) {
