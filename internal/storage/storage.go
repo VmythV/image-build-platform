@@ -34,8 +34,13 @@ func Open(ctx context.Context, cfg config.Config) (*Store, error) {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
 
-	db.SetMaxOpenConns(10)
-	db.SetMaxIdleConns(5)
+	if driverName == "sqlite" {
+		db.SetMaxOpenConns(1)
+		db.SetMaxIdleConns(1)
+	} else {
+		db.SetMaxOpenConns(10)
+		db.SetMaxIdleConns(5)
+	}
 	db.SetConnMaxLifetime(30 * time.Minute)
 
 	if driverName == "sqlite" {
