@@ -1,0 +1,17 @@
+[Unit]
+Description=Image Build Platform
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ibp
+Group=ibp
+WorkingDirectory=/opt/image-build-platform
+ExecStart=/opt/image-build-platform/ibp-server --config /opt/image-build-platform/config.yaml --static-dir /opt/image-build-platform/web/dist
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

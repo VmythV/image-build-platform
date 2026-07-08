@@ -31,12 +31,21 @@ MVP 不支持：
 
 ```text
 image-build-platform_{version}_{os}_{arch}.tar.gz
-└── image-build-platform
+└── image-build-platform_{version}_{os}_{arch}
     ├── ibp-server
     ├── config.example.yaml
     ├── README.md
-    ├── LICENSE
+    ├── docs
+    ├── web
+    │   └── dist
+    ├── deploy
+    │   ├── compose
+    │   │   ├── sqlite.yml
+    │   │   └── postgres.yml
+    │   └── systemd
+    │       └── image-build-platform.service
     └── scripts
+        ├── release.sh
         ├── install-systemd.sh
         └── backup.sh
 ```
@@ -44,8 +53,10 @@ image-build-platform_{version}_{os}_{arch}.tar.gz
 说明：
 
 - `ibp-server` 是 Go 后端二进制。
-- 前端静态资源优先内嵌到二进制。
+- 前端静态资源位于 `web/dist`，由后端服务托管。
 - `config.example.yaml` 是默认配置示例。
+- `docs` 包含部署、路线图和验收文档。
+- `deploy/compose` 提供基于已发布镜像的 Docker 部署示例。
 - `scripts` 提供可选运维脚本，不作为运行必需。
 
 ### 2.2 Docker 镜像
@@ -53,7 +64,7 @@ image-build-platform_{version}_{os}_{arch}.tar.gz
 Docker 镜像包含：
 
 - `ibp-server`。
-- 内嵌前端静态资源。
+- `web/dist` 前端静态资源。
 - Docker CLI。
 - OpenSSH client。
 - CA certificates。
@@ -262,6 +273,13 @@ sudo systemctl enable image-build-platform
 sudo systemctl start image-build-platform
 ```
 
+发布包内也提供了安装脚本：
+
+```bash
+sudo APP_DIR=/opt/image-build-platform ./scripts/install-systemd.sh
+sudo systemctl start image-build-platform
+```
+
 ### 7.3 本机构建权限
 
 如果二进制部署需要本机构建：
@@ -341,6 +359,18 @@ volumes:
   ibp-data:
 ```
 
+源码检出环境已提供可直接使用的 SQLite compose 文件：
+
+```bash
+docker compose up -d
+```
+
+使用已发布镜像部署时，可以使用 `deploy/compose/sqlite.yml`：
+
+```bash
+docker compose -f deploy/compose/sqlite.yml up -d
+```
+
 PostgreSQL 版本：
 
 ```yaml
@@ -374,6 +404,18 @@ services:
 volumes:
   ibp-data:
   ibp-postgres:
+```
+
+源码检出环境已提供 PostgreSQL compose 文件：
+
+```bash
+docker compose -f docker-compose.postgres.yml up -d
+```
+
+使用已发布镜像部署时，可以使用 `deploy/compose/postgres.yml`：
+
+```bash
+docker compose -f deploy/compose/postgres.yml up -d
 ```
 
 ## 9. PostgreSQL 配置
@@ -507,6 +549,12 @@ systemctl start image-build-platform
 
 在线备份后续可以通过 SQLite backup API 实现。
 
+发布包内提供了本地备份脚本：
+
+```bash
+APP_DIR=/opt/image-build-platform ./scripts/backup.sh
+```
+
 ### 13.3 PostgreSQL 备份
 
 ```bash
@@ -611,6 +659,25 @@ MVP 不承诺自动降级。
 - docker compose 示例。
 - checksums。
 
+当前仓库可通过发布脚本生成二进制发布包：
+
+```bash
+make release VERSION=v0.1.0
+```
+
+交叉构建示例：
+
+```bash
+VERSION=v0.1.0 TARGET_OS=linux TARGET_ARCH=amd64 bash scripts/release.sh
+VERSION=v0.1.0 TARGET_OS=linux TARGET_ARCH=arm64 bash scripts/release.sh
+```
+
+发布产物输出到：
+
+```text
+dist/release
+```
+
 版本号：
 
 ```text
@@ -640,3 +707,4 @@ MVP 部署验收必须通过：
 - 构建日志能写入数据目录。
 - 备份和恢复流程可执行。
 
+完整 MVP 验收清单见 [docs/11-acceptance.md](11-acceptance.md)。

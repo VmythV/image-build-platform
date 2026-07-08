@@ -5,7 +5,7 @@ WEB_DIR := web
 GO ?= go
 NPM ?= npm
 
-.PHONY: install dev dev-api dev-web build build-api build-web test fmt docker-build clean
+.PHONY: install dev dev-api dev-web build build-api build-web test fmt docker-build release backup clean
 
 install:
 	$(NPM) --prefix $(WEB_DIR) install
@@ -38,5 +38,11 @@ fmt:
 docker-build:
 	docker build --build-arg VERSION=$(VERSION) -t image-build-platform:$(VERSION) .
 
+release:
+	VERSION=$(VERSION) bash scripts/release.sh
+
+backup:
+	bash scripts/backup.sh
+
 clean:
-	rm -rf bin $(WEB_DIR)/dist
+	rm -rf bin dist $(WEB_DIR)/dist

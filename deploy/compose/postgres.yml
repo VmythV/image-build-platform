@@ -1,0 +1,39 @@
+services:
+  image-build-platform:
+    image: ghcr.io/vmythv/image-build-platform:latest
+    container_name: image-build-platform
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    environment:
+      IBP_PUBLIC_URL: "http://localhost:8080"
+      IBP_SECURITY_SECRET_KEY: "change-me-use-a-long-random-secret"
+      IBP_DATABASE_DRIVER: "postgres"
+      IBP_DATABASE_DSN: "postgres://ibp:ibp-password@postgres:5432/ibp?sslmode=disable"
+      IBP_STATIC_DIR: "/app/web/dist"
+    volumes:
+      - ibp-data:/app/data
+      # Enable this only when local host Docker builds are required.
+      # - /var/run/docker.sock:/var/run/docker.sock
+
+  postgres:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ibp
+      POSTGRES_USER: ibp
+      POSTGRES_PASSWORD: ibp-password
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ibp -d ibp"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - ibp-postgres:/var/lib/postgresql/data
+
+volumes:
+  ibp-data:
+  ibp-postgres:
