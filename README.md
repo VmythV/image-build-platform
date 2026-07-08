@@ -94,6 +94,12 @@ Install frontend dependencies:
 make install
 ```
 
+Create a local config file if you want to override defaults:
+
+```bash
+cp config.example.yaml config.yaml
+```
+
 Run the backend and frontend dev servers:
 
 ```bash
@@ -115,7 +121,7 @@ make test
 Run the built backend with the built frontend assets:
 
 ```bash
-./bin/ibp-server --addr 127.0.0.1:8080 --static-dir web/dist
+./bin/ibp-server --config config.yaml --addr 127.0.0.1:8080 --static-dir web/dist
 ```
 
 Health check:
@@ -123,6 +129,8 @@ Health check:
 ```bash
 curl http://127.0.0.1:8080/healthz
 ```
+
+On startup, the backend creates the configured data directories, opens the configured database, and applies embedded SQL migrations automatically. The default database is SQLite at `data/app.db`.
 
 Build the Docker image:
 
@@ -174,4 +182,4 @@ Image Build Platform 是一个私有化镜像构建平台，目标是把构建�
 
 ## Repository Status
 
-This repository contains the product planning docs and the M1 project scaffold: Go backend, React/Vite frontend, shared build commands, Docker files, and CI.
+This repository contains the product planning docs and the implementation scaffold: Go backend, React/Vite frontend, configuration loading, database migrations, shared build commands, and Docker files.

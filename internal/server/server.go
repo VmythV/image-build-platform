@@ -1,6 +1,8 @@
 package server
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -19,6 +21,7 @@ type Options struct {
 	StaticDir string
 	Version   string
 	Logger    *slog.Logger
+	DB        *sql.DB
 }
 
 func New(opts Options) http.Handler {
@@ -34,7 +37,7 @@ func New(opts Options) http.Handler {
 	r.Use(middleware.CleanPath)
 	r.Use(middleware.Timeout(60 * time.Second))
 
-	r.Get("/healthz", healthHandler(opts.Version))
+	r.Get("/healthz", healthHandler(opts.Version, opts.DB))
 
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Get("/status", statusHandler(opts.Version))
@@ -47,12 +50,29 @@ func New(opts Options) http.Handler {
 	return r
 }
 
-func healthHandler(version string) http.HandlerFunc {
+func healthHandler(version string, db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		databaseStatus := "not_configured"
+		if db != nil {
+			ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+			defer cancel()
+			if err := db.PingContext(ctx); err != nil {
+				writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+					"status":   "unhealthy",
+					"time":     time.Now().UTC().Format(time.RFC3339),
+					"version":  version,
+					"database": "unavailable",
+				})
+				return
+			}
+			databaseStatus = "ok"
+		}
+
 		writeJSON(w, http.StatusOK, map[string]string{
-			"status":  "ok",
-			"time":    time.Now().UTC().Format(time.RFC3339),
-			"version": version,
+			"status":   "ok",
+			"time":     time.Now().UTC().Format(time.RFC3339),
+			"version":  version,
+			"database": databaseStatus,
 		})
 	}
 }
