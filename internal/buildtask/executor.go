@@ -2,6 +2,7 @@ package buildtask
 
 import (
 	"archive/tar"
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -15,11 +16,19 @@ import (
 	"time"
 
 	"github.com/VmythV/image-build-platform/internal/buildhost"
+	"github.com/VmythV/image-build-platform/internal/registry"
 )
 
 type Executor interface {
 	Build(ctx context.Context, task BuildTask, host buildhost.BuildHost, contextPath string, logPath string) error
+	Push(ctx context.Context, task BuildTask, host buildhost.BuildHost, pushRegistry registry.Registry, secret *registry.RegistrySecret, logPath string) (PushResult, error)
 	Cancel(taskID string) bool
+}
+
+type PushResult struct {
+	ImageID   string
+	Digest    string
+	SizeBytes *int64
 }
 
 type LocalDockerExecutor struct {
@@ -108,7 +117,6 @@ func (e *LocalDockerExecutor) buildSSH(ctx context.Context, task BuildTask, host
 
 	buildArgs := dockerBuildArgs(task)
 	buildCommand := "cd " + shellQuote(remoteDir) + " && " + shellJoin(append([]string{dockerCommand}, buildArgs...))
-	_, _ = fmt.Fprintf(logFile, "\n[%s] ssh %s -- %s\n", time.Now().UTC().Format(time.RFC3339), sshTarget(host), buildCommand)
 	if err := runSSHCommand(ctx, host, buildCommand, logFile, nil); err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -118,7 +126,6 @@ func (e *LocalDockerExecutor) buildSSH(ctx context.Context, task BuildTask, host
 
 	inspectArgs := []string{"image", "inspect", task.ImageRef}
 	inspectCommand := shellJoin(append([]string{dockerCommand}, inspectArgs...))
-	_, _ = fmt.Fprintf(logFile, "\n[%s] ssh %s -- %s\n", time.Now().UTC().Format(time.RFC3339), sshTarget(host), inspectCommand)
 	if err := runSSHCommand(ctx, host, inspectCommand, logFile, nil); err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -128,6 +135,119 @@ func (e *LocalDockerExecutor) buildSSH(ctx context.Context, task BuildTask, host
 
 	_, _ = fmt.Fprintf(logFile, "\n[%s] remote build finished successfully\n", time.Now().UTC().Format(time.RFC3339))
 	return nil
+}
+
+func (e *LocalDockerExecutor) Push(ctx context.Context, task BuildTask, host buildhost.BuildHost, pushRegistry registry.Registry, secret *registry.RegistrySecret, logPath string) (PushResult, error) {
+	pushCtx, cancel := context.WithCancel(ctx)
+	e.register(task.ID, cancel)
+	defer e.unregister(task.ID)
+
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o640)
+	if err != nil {
+		return PushResult{}, fmt.Errorf("open build log: %w", err)
+	}
+	defer logFile.Close()
+
+	switch host.ConnectionType {
+	case buildhost.ConnectionLocalDocker:
+		return e.pushLocal(pushCtx, task, host, pushRegistry, secret, logFile)
+	case buildhost.ConnectionSSH:
+		return e.pushSSH(pushCtx, task, host, pushRegistry, secret, logFile)
+	default:
+		return PushResult{}, fmt.Errorf("unsupported build host connection type %q", host.ConnectionType)
+	}
+}
+
+func (e *LocalDockerExecutor) pushLocal(ctx context.Context, task BuildTask, host buildhost.BuildHost, pushRegistry registry.Registry, secret *registry.RegistrySecret, logFile *os.File) (PushResult, error) {
+	dockerCommand := strings.TrimSpace(host.DockerCommand)
+	if dockerCommand == "" {
+		dockerCommand = buildhost.DefaultDockerCommand
+	}
+
+	configDir, err := os.MkdirTemp("", "ibp-push-docker-config-*")
+	if err != nil {
+		return PushResult{}, fmt.Errorf("create Docker config: %w", err)
+	}
+	defer func() {
+		_ = os.RemoveAll(configDir)
+	}()
+
+	env := append(dockerEnv(host), "DOCKER_CONFIG="+configDir)
+	if secret != nil && secret.Username != "" && secret.Password != "" {
+		if err := runLocalDockerCommand(ctx, dockerCommand, []string{"login", pushRegistry.Endpoint, "--username", secret.Username, "--password-stdin"}, env, strings.NewReader(secret.Password), logFile); err != nil {
+			if ctx.Err() != nil {
+				return PushResult{}, ctx.Err()
+			}
+			return PushResult{}, fmt.Errorf("docker login failed: %w", err)
+		}
+		defer func() {
+			_ = runLocalDockerCommand(context.Background(), dockerCommand, []string{"logout", pushRegistry.Endpoint}, env, nil, logFile)
+		}()
+	}
+
+	if err := runLocalDockerCommand(ctx, dockerCommand, []string{"push", task.ImageRef}, env, nil, logFile); err != nil {
+		if ctx.Err() != nil {
+			return PushResult{}, ctx.Err()
+		}
+		return PushResult{}, fmt.Errorf("docker push failed: %w", err)
+	}
+
+	inspectArgs := []string{"image", "inspect", "--format", "{{.Id}}|{{if .RepoDigests}}{{index .RepoDigests 0}}{{end}}|{{.Size}}", task.ImageRef}
+	output, err := runLocalDockerCommandOutput(ctx, dockerCommand, inspectArgs, env, nil, logFile)
+	if err != nil {
+		if ctx.Err() != nil {
+			return PushResult{}, ctx.Err()
+		}
+		return PushResult{}, fmt.Errorf("docker image inspect after push failed: %w", err)
+	}
+	return parsePushInspectOutput(output), nil
+}
+
+func (e *LocalDockerExecutor) pushSSH(ctx context.Context, task BuildTask, host buildhost.BuildHost, pushRegistry registry.Registry, secret *registry.RegistrySecret, logFile *os.File) (PushResult, error) {
+	dockerCommand := strings.TrimSpace(host.DockerCommand)
+	if dockerCommand == "" {
+		dockerCommand = buildhost.DefaultDockerCommand
+	}
+
+	configDir := remoteBuildDir(task.ID) + "-docker-config"
+	if err := runSSHCommand(ctx, host, "rm -rf "+shellQuote(configDir)+" && mkdir -p "+shellQuote(configDir), logFile, nil); err != nil {
+		if ctx.Err() != nil {
+			return PushResult{}, ctx.Err()
+		}
+		return PushResult{}, fmt.Errorf("prepare remote Docker config failed: %w", err)
+	}
+	defer cleanupSSHContext(host, configDir, logFile)
+
+	if secret != nil && secret.Username != "" && secret.Password != "" {
+		loginCommand := withDockerConfig(configDir, shellJoin([]string{dockerCommand, "login", pushRegistry.Endpoint, "--username", secret.Username, "--password-stdin"}))
+		if err := runSSHCommand(ctx, host, loginCommand, logFile, strings.NewReader(secret.Password)); err != nil {
+			if ctx.Err() != nil {
+				return PushResult{}, ctx.Err()
+			}
+			return PushResult{}, fmt.Errorf("remote docker login failed: %w", err)
+		}
+		defer func() {
+			_ = runSSHCommand(context.Background(), host, withDockerConfig(configDir, shellJoin([]string{dockerCommand, "logout", pushRegistry.Endpoint})), logFile, nil)
+		}()
+	}
+
+	pushCommand := withDockerConfig(configDir, shellJoin([]string{dockerCommand, "push", task.ImageRef}))
+	if err := runSSHCommand(ctx, host, pushCommand, logFile, nil); err != nil {
+		if ctx.Err() != nil {
+			return PushResult{}, ctx.Err()
+		}
+		return PushResult{}, fmt.Errorf("remote docker push failed: %w", err)
+	}
+
+	inspectCommand := shellJoin([]string{dockerCommand, "image", "inspect", "--format", "{{.Id}}|{{if .RepoDigests}}{{index .RepoDigests 0}}{{end}}|{{.Size}}", task.ImageRef})
+	output, err := runSSHCommandWithOutput(ctx, host, inspectCommand, logFile)
+	if err != nil {
+		if ctx.Err() != nil {
+			return PushResult{}, ctx.Err()
+		}
+		return PushResult{}, fmt.Errorf("remote docker image inspect after push failed: %w", err)
+	}
+	return parsePushInspectOutput(output), nil
 }
 
 func (e *LocalDockerExecutor) Cancel(taskID string) bool {
@@ -232,12 +352,49 @@ func writeTarContext(root string, writer io.Writer) error {
 	})
 }
 
+func runLocalDockerCommand(ctx context.Context, dockerCommand string, args []string, env []string, stdin io.Reader, logFile *os.File) error {
+	_, _ = fmt.Fprintf(logFile, "\n[%s] docker %s\n", time.Now().UTC().Format(time.RFC3339), strings.Join(args, " "))
+	cmd := exec.CommandContext(ctx, dockerCommand, args...)
+	cmd.Env = env
+	cmd.Stdin = stdin
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+	return cmd.Run()
+}
+
+func runLocalDockerCommandOutput(ctx context.Context, dockerCommand string, args []string, env []string, stdin io.Reader, logFile *os.File) (string, error) {
+	_, _ = fmt.Fprintf(logFile, "\n[%s] docker %s\n", time.Now().UTC().Format(time.RFC3339), strings.Join(args, " "))
+	var output bytes.Buffer
+	cmd := exec.CommandContext(ctx, dockerCommand, args...)
+	cmd.Env = env
+	cmd.Stdin = stdin
+	cmd.Stdout = io.MultiWriter(logFile, &output)
+	cmd.Stderr = logFile
+	err := cmd.Run()
+	return strings.TrimSpace(output.String()), err
+}
+
 func runSSHCommand(ctx context.Context, host buildhost.BuildHost, remoteCommand string, logFile *os.File, stdin io.Reader) error {
+	_, _ = fmt.Fprintf(logFile, "\n[%s] ssh %s -- %s\n", time.Now().UTC().Format(time.RFC3339), sshTarget(host), remoteCommand)
 	cmd := exec.CommandContext(ctx, "ssh", sshArgs(host, remoteCommand)...)
 	cmd.Stdin = stdin
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	return cmd.Run()
+}
+
+func runSSHCommandWithOutput(ctx context.Context, host buildhost.BuildHost, remoteCommand string, logFile *os.File) (string, error) {
+	_, _ = fmt.Fprintf(logFile, "\n[%s] ssh %s -- %s\n", time.Now().UTC().Format(time.RFC3339), sshTarget(host), remoteCommand)
+	var output bytes.Buffer
+	cmd := exec.CommandContext(ctx, "ssh", sshArgs(host, remoteCommand)...)
+	cmd.Stdout = io.MultiWriter(logFile, &output)
+	cmd.Stderr = logFile
+	err := cmd.Run()
+	return strings.TrimSpace(output.String()), err
+}
+
+func withDockerConfig(configDir string, command string) string {
+	return "DOCKER_CONFIG=" + shellQuote(configDir) + " " + command
 }
 
 func cleanupSSHContext(host buildhost.BuildHost, remoteDir string, logFile *os.File) {
@@ -312,6 +469,32 @@ func dockerEnv(host buildhost.BuildHost) []string {
 		endpoint = "unix://" + endpoint
 	}
 	return append(env, "DOCKER_HOST="+endpoint)
+}
+
+func parsePushInspectOutput(output string) PushResult {
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	if len(lines) == 0 {
+		return PushResult{}
+	}
+	parts := strings.Split(strings.TrimSpace(lines[len(lines)-1]), "|")
+	result := PushResult{}
+	if len(parts) > 0 {
+		result.ImageID = strings.TrimSpace(parts[0])
+	}
+	if len(parts) > 1 {
+		repoDigest := strings.TrimSpace(parts[1])
+		if _, digest, ok := strings.Cut(repoDigest, "@"); ok {
+			result.Digest = strings.TrimSpace(digest)
+		} else {
+			result.Digest = repoDigest
+		}
+	}
+	if len(parts) > 2 {
+		if parsed, err := strconv.ParseInt(strings.TrimSpace(parts[2]), 10, 64); err == nil {
+			result.SizeBytes = &parsed
+		}
+	}
+	return result
 }
 
 func dockerBuildArgs(task BuildTask) []string {

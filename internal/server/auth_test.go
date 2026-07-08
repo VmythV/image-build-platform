@@ -15,6 +15,7 @@ import (
 	"github.com/VmythV/image-build-platform/internal/buildhost"
 	"github.com/VmythV/image-build-platform/internal/buildtask"
 	"github.com/VmythV/image-build-platform/internal/config"
+	"github.com/VmythV/image-build-platform/internal/registry"
 	"github.com/VmythV/image-build-platform/internal/storage"
 )
 
@@ -398,7 +399,7 @@ func TestBuildTasksQueueDispatchCancelAndRetry(t *testing.T) {
 		}
 	})
 
-	waitForBuildTaskStatus(t, router, retryTaskID, sessionCookie, "build_success")
+	waitForBuildTaskStatus(t, router, retryTaskID, sessionCookie, "push_success")
 	getJSON(t, router, http.MethodGet, "/api/v1/build-hosts", "", sessionCookie, http.StatusOK, func(body map[string]any) {
 		data := body["data"].([]any)
 		host := data[0].(map[string]any)
@@ -418,8 +419,21 @@ func TestBuildTasksQueueDispatchCancelAndRetry(t *testing.T) {
 		if !strings.Contains(body, "fake local build completed") {
 			t.Fatalf("expected fake build log in stream, got %q", body)
 		}
-		if !strings.Contains(body, "event: done") || !strings.Contains(body, "data: build_success") {
+		if !strings.Contains(body, "event: done") || !strings.Contains(body, "data: push_success") {
 			t.Fatalf("expected SSE done event, got %q", body)
+		}
+	})
+	getJSON(t, router, http.MethodGet, "/api/v1/artifacts", "", sessionCookie, http.StatusOK, func(body map[string]any) {
+		data := body["data"].([]any)
+		if len(data) != 1 {
+			t.Fatalf("expected one artifact, got %d", len(data))
+		}
+		artifact := data[0].(map[string]any)
+		if artifact["imageRef"] != "registry.example.com/platform/java-runtime:root" {
+			t.Fatalf("expected artifact image ref, got %v", artifact["imageRef"])
+		}
+		if artifact["digest"] != "sha256:fake-digest" {
+			t.Fatalf("expected fake digest, got %v", artifact["digest"])
 		}
 	})
 }
@@ -475,7 +489,7 @@ func TestBuildTasksCanRunOnSSHHost(t *testing.T) {
 		}
 	})
 
-	waitForBuildTaskStatus(t, router, taskID, sessionCookie, "build_success")
+	waitForBuildTaskStatus(t, router, taskID, sessionCookie, "push_success")
 	getText(t, router, http.MethodGet, "/api/v1/build-tasks/"+taskID+"/logs", sessionCookie, http.StatusOK, func(body string) {
 		if !strings.Contains(body, "on SSH Builder") {
 			t.Fatalf("expected SSH host name in fake build log, got %q", body)
@@ -649,6 +663,31 @@ func (fakeBuildExecutor) Build(ctx context.Context, task buildtask.BuildTask, ho
 
 	_, err = logFile.WriteString("fake local build completed for " + task.ImageRef + " on " + host.Name + "\n")
 	return err
+}
+
+func (fakeBuildExecutor) Push(ctx context.Context, task buildtask.BuildTask, host buildhost.BuildHost, pushRegistry registry.Registry, secret *registry.RegistrySecret, logPath string) (buildtask.PushResult, error) {
+	select {
+	case <-ctx.Done():
+		return buildtask.PushResult{}, ctx.Err()
+	default:
+	}
+
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o640)
+	if err != nil {
+		return buildtask.PushResult{}, err
+	}
+	defer logFile.Close()
+
+	_, err = logFile.WriteString("fake push completed for " + task.ImageRef + " to " + pushRegistry.Name + " on " + host.Name + "\n")
+	if err != nil {
+		return buildtask.PushResult{}, err
+	}
+	size := int64(42)
+	return buildtask.PushResult{
+		ImageID:   "sha256:fake-image-id",
+		Digest:    "sha256:fake-digest",
+		SizeBytes: &size,
+	}, nil
 }
 
 func (fakeBuildExecutor) Cancel(taskID string) bool {

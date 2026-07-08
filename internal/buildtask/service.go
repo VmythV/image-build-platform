@@ -9,8 +9,10 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/VmythV/image-build-platform/internal/buildhost"
+	"github.com/VmythV/image-build-platform/internal/imageartifact"
 	"github.com/VmythV/image-build-platform/internal/imageproject"
 	"github.com/VmythV/image-build-platform/internal/platform/clock"
 	"github.com/VmythV/image-build-platform/internal/platform/id"
@@ -28,6 +30,8 @@ type Service struct {
 	repo       Repository
 	projects   imageproject.Repository
 	registries registry.Repository
+	secrets    RegistrySecretProvider
+	artifacts  ArtifactRecorder
 	hosts      buildhost.Repository
 	executor   Executor
 	contextDir string
@@ -46,14 +50,24 @@ func NewService(repo Repository, projects imageproject.Repository, registries re
 }
 
 type ServiceOptions struct {
-	Repository Repository
-	Projects   imageproject.Repository
-	Registries registry.Repository
-	Hosts      buildhost.Repository
-	Executor   Executor
-	ContextDir string
-	LogDir     string
-	Logger     *slog.Logger
+	Repository      Repository
+	Projects        imageproject.Repository
+	Registries      registry.Repository
+	RegistrySecrets RegistrySecretProvider
+	Artifacts       ArtifactRecorder
+	Hosts           buildhost.Repository
+	Executor        Executor
+	ContextDir      string
+	LogDir          string
+	Logger          *slog.Logger
+}
+
+type RegistrySecretProvider interface {
+	Secret(ctx context.Context, registry registry.Registry) (*registry.RegistrySecret, error)
+}
+
+type ArtifactRecorder interface {
+	RecordPushed(ctx context.Context, artifact imageartifact.Artifact, event imageartifact.PushEvent) error
 }
 
 func NewServiceWithOptions(opts ServiceOptions) Service {
@@ -78,6 +92,8 @@ func NewServiceWithOptions(opts ServiceOptions) Service {
 		repo:       opts.Repository,
 		projects:   opts.Projects,
 		registries: opts.Registries,
+		secrets:    opts.RegistrySecrets,
+		artifacts:  opts.Artifacts,
 		hosts:      opts.Hosts,
 		executor:   executor,
 		contextDir: contextDir,
@@ -274,7 +290,11 @@ func (s Service) runBuild(taskID string) {
 	}
 	contextPath := filepath.Join(s.contextDir, task.ID)
 	err = s.executor.Build(ctx, task, host, contextPath, task.LogPath)
-	s.completeBuild(ctx, task.ID, err)
+	if err != nil {
+		s.completeBuild(ctx, task.ID, err)
+		return
+	}
+	s.pushBuild(ctx, task, host)
 }
 
 func (s Service) completeBuild(ctx context.Context, taskID string, buildErr error) {
@@ -288,6 +308,90 @@ func (s Service) completeBuild(ctx context.Context, taskID string, buildErr erro
 	if _, err := s.repo.CompleteBuild(ctx, taskID, true, "", "", now); err != nil {
 		s.logger.Warn("mark build task success", "task_id", taskID, "error", err)
 	}
+}
+
+func (s Service) pushBuild(ctx context.Context, task BuildTask, host buildhost.BuildHost) {
+	pushing, err := s.repo.StartPush(ctx, task.ID, clock.Now())
+	if err != nil {
+		s.logger.Warn("start build task push", "task_id", task.ID, "error", err)
+		return
+	}
+
+	pushRegistry, err := s.registries.FindByID(ctx, pushing.RegistryID)
+	if err != nil {
+		s.completePush(ctx, pushing.ID, fmt.Errorf("load push registry: %w", err))
+		return
+	}
+	if !pushRegistry.AllowPush {
+		s.completePush(ctx, pushing.ID, errors.New("registry does not allow push"))
+		return
+	}
+
+	var secret *registry.RegistrySecret
+	if s.secrets != nil {
+		secret, err = s.secrets.Secret(ctx, pushRegistry)
+		if err != nil {
+			s.completePush(ctx, pushing.ID, fmt.Errorf("load push registry credential: %w", err))
+			return
+		}
+	}
+
+	pushStartedAt := clock.Now()
+	result, err := s.executor.Push(ctx, pushing, host, pushRegistry, secret, pushing.LogPath)
+	if err != nil {
+		s.completePush(ctx, pushing.ID, err)
+		return
+	}
+
+	if s.artifacts != nil {
+		if err := s.recordPushedArtifact(ctx, pushing, result, pushStartedAt); err != nil {
+			s.completePush(ctx, pushing.ID, fmt.Errorf("record image artifact: %w", err))
+			return
+		}
+	}
+
+	if _, err := s.repo.CompletePush(ctx, pushing.ID, true, "", "", clock.Now()); err != nil {
+		s.logger.Warn("mark build task push success", "task_id", pushing.ID, "error", err)
+	}
+}
+
+func (s Service) completePush(ctx context.Context, taskID string, pushErr error) {
+	if _, err := s.repo.CompletePush(ctx, taskID, false, "PUSH_FAILED", pushErr.Error(), clock.Now()); err != nil {
+		s.logger.Warn("mark build task push failed", "task_id", taskID, "error", err)
+	}
+}
+
+func (s Service) recordPushedArtifact(ctx context.Context, task BuildTask, result PushResult, pushStartedAt time.Time) error {
+	now := clock.Now()
+	artifactID := id.New()
+	return s.artifacts.RecordPushed(ctx, imageartifact.Artifact{
+		ID:            artifactID,
+		BuildTaskID:   task.ID,
+		ProjectID:     task.ProjectID,
+		VersionNodeID: task.VersionNodeID,
+		RegistryID:    task.RegistryID,
+		ImageRef:      task.ImageRef,
+		ImageID:       result.ImageID,
+		Digest:        result.Digest,
+		Tag:           task.ImageTag,
+		Architecture:  task.Architecture,
+		SizeBytes:     result.SizeBytes,
+		Status:        imageartifact.StatusAvailable,
+		Pushed:        true,
+		PushedAt:      &now,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}, imageartifact.PushEvent{
+		ID:          id.New(),
+		ArtifactID:  artifactID,
+		BuildTaskID: task.ID,
+		RegistryID:  task.RegistryID,
+		Status:      imageartifact.PushStatusSuccess,
+		StartedAt:   pushStartedAt,
+		FinishedAt:  &now,
+		CreatedBy:   task.CreatedBy,
+		CreatedAt:   now,
+	})
 }
 
 type normalizedCreateInput struct {

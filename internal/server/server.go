@@ -19,6 +19,7 @@ import (
 	"github.com/VmythV/image-build-platform/internal/buildtask"
 	"github.com/VmythV/image-build-platform/internal/credential"
 	"github.com/VmythV/image-build-platform/internal/dockerfile"
+	"github.com/VmythV/image-build-platform/internal/imageartifact"
 	"github.com/VmythV/image-build-platform/internal/imageproject"
 	"github.com/VmythV/image-build-platform/internal/registry"
 	"github.com/go-chi/chi/v5"
@@ -52,6 +53,7 @@ func New(opts Options) (http.Handler, error) {
 	var imageProjectRoutes http.Handler
 	var dockerfileRoutes http.Handler
 	var buildTaskRoutes http.Handler
+	var artifactRoutes http.Handler
 	if opts.DB != nil {
 		service, err := auth.NewService(auth.ServiceOptions{
 			Repository: auth.NewRepository(opts.DB, opts.DriverName),
@@ -87,6 +89,8 @@ func New(opts Options) (http.Handler, error) {
 			registry.CommandDetector{},
 		)
 		registryRoutes = registry.NewHandler(registryService).Routes()
+		artifactRepo := imageartifact.NewRepository(opts.DB, opts.DriverName)
+		artifactRoutes = imageartifact.NewHandler(artifactRepo).Routes()
 
 		imageProjectService := imageproject.NewService(
 			imageproject.NewRepository(opts.DB, opts.DriverName),
@@ -94,14 +98,16 @@ func New(opts Options) (http.Handler, error) {
 		imageProjectRoutes = imageproject.NewHandler(imageProjectService).Routes()
 		dockerfileRoutes = dockerfile.NewHandler(dockerfile.NewService()).Routes()
 		buildTaskService := buildtask.NewServiceWithOptions(buildtask.ServiceOptions{
-			Repository: buildtask.NewRepository(opts.DB, opts.DriverName),
-			Projects:   imageproject.NewRepository(opts.DB, opts.DriverName),
-			Registries: registry.NewRepository(opts.DB, opts.DriverName),
-			Hosts:      buildhost.NewRepository(opts.DB, opts.DriverName),
-			ContextDir: opts.ContextDir,
-			LogDir:     opts.LogDir,
-			Executor:   opts.BuildExecutor,
-			Logger:     logger,
+			Repository:      buildtask.NewRepository(opts.DB, opts.DriverName),
+			Projects:        imageproject.NewRepository(opts.DB, opts.DriverName),
+			Registries:      registry.NewRepository(opts.DB, opts.DriverName),
+			RegistrySecrets: registryService,
+			Artifacts:       artifactRepo,
+			Hosts:           buildhost.NewRepository(opts.DB, opts.DriverName),
+			ContextDir:      opts.ContextDir,
+			LogDir:          opts.LogDir,
+			Executor:        opts.BuildExecutor,
+			Logger:          logger,
 		})
 		buildTaskRoutes = buildtask.NewHandler(buildTaskService).Routes()
 	}
@@ -148,6 +154,12 @@ func New(opts Options) (http.Handler, error) {
 			r.Group(func(r chi.Router) {
 				r.Use(auth.Middleware(authHandler))
 				r.Mount("/build-tasks", buildTaskRoutes)
+			})
+		}
+		if artifactRoutes != nil {
+			r.Group(func(r chi.Router) {
+				r.Use(auth.Middleware(authHandler))
+				r.Mount("/artifacts", artifactRoutes)
 			})
 		}
 	})

@@ -24,7 +24,7 @@ const navigation = [
   { id: "registries", label: "Registries", icon: Warehouse },
   { id: "image-projects", label: "Image Projects", icon: GitBranch },
   { id: "build-tasks", label: "Build Tasks", icon: ListChecks },
-  { id: "artifacts", label: "Artifacts", icon: Image, disabled: true },
+  { id: "artifacts", label: "Artifacts", icon: Image },
   { id: "settings", label: "Settings", icon: Settings, disabled: true },
   { id: "help", label: "Help", icon: HelpCircle, disabled: true },
 ]
@@ -43,6 +43,7 @@ const viewTitles: Record<AppView, { title: string; subtitle: string }> = {
   registries: { title: "Registries", subtitle: "Pull and push destinations" },
   "image-projects": { title: "Image Projects", subtitle: "Root images, versions, and branches" },
   "build-tasks": { title: "Build Tasks", subtitle: "Queue, scheduling, cancel, and retry" },
+  artifacts: { title: "Artifacts", subtitle: "Pushed image records and pull commands" },
 }
 
 export function AppShell({ children, activeView, user, logoutPending = false, onNavigate, onLogout }: AppShellProps) {

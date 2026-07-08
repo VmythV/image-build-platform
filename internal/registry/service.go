@@ -162,6 +162,10 @@ func (s Service) Check(ctx context.Context, registryID string) (Registry, CheckR
 	return updated, result, nil
 }
 
+func (s Service) Secret(ctx context.Context, registry Registry) (*RegistrySecret, error) {
+	return s.registrySecret(ctx, registry)
+}
+
 func (s Service) createCredential(ctx context.Context, registryName string, secret RegistrySecret, actorID string, nowTime time.Time) (string, error) {
 	encrypted, err := s.encryptSecret(secret)
 	if err != nil {
