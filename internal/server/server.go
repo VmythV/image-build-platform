@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/VmythV/image-build-platform/internal/auth"
+	"github.com/VmythV/image-build-platform/internal/buildhost"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 )
@@ -35,7 +36,9 @@ func New(opts Options) (http.Handler, error) {
 		logger = slog.Default()
 	}
 
+	var authHandler auth.Handler
 	var authRoutes http.Handler
+	var buildHostRoutes http.Handler
 	if opts.DB != nil {
 		service, err := auth.NewService(auth.ServiceOptions{
 			Repository: auth.NewRepository(opts.DB, opts.DriverName),
@@ -45,11 +48,20 @@ func New(opts Options) (http.Handler, error) {
 			return nil, fmt.Errorf("initialize auth service: %w", err)
 		}
 
-		handler := auth.NewHandler(auth.HandlerOptions{
+		authHandler = auth.NewHandler(auth.HandlerOptions{
 			Service:      service,
 			SecureCookie: opts.SecureCookie,
 		})
-		authRoutes = handler.Routes()
+		authRoutes = authHandler.Routes()
+
+		buildHostService := buildhost.NewService(
+			buildhost.NewRepository(opts.DB, opts.DriverName),
+			buildhost.CommandDetector{},
+		)
+		if err := buildHostService.EnsureDefaultLocalHost(context.Background()); err != nil {
+			return nil, fmt.Errorf("ensure default local build host: %w", err)
+		}
+		buildHostRoutes = buildhost.NewHandler(buildHostService).Routes()
 	}
 
 	r := chi.NewRouter()
@@ -65,6 +77,12 @@ func New(opts Options) (http.Handler, error) {
 		r.Get("/status", statusHandler(opts.Version))
 		if authRoutes != nil {
 			r.Mount("/", authRoutes)
+		}
+		if buildHostRoutes != nil {
+			r.Group(func(r chi.Router) {
+				r.Use(auth.Middleware(authHandler))
+				r.Mount("/build-hosts", buildHostRoutes)
+			})
 		}
 	})
 

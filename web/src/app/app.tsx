@@ -3,12 +3,16 @@ import { Button } from "@/components/ui/button"
 import { getCurrentUser, getSetupStatus, logout, type User } from "@/lib/auth-api"
 import { LoginPage } from "@/pages/auth/login-page"
 import { SetupPage } from "@/pages/auth/setup-page"
+import { BuildHostsPage } from "@/pages/build-hosts/build-hosts-page"
 import { DashboardPage } from "@/pages/dashboard/dashboard-page"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { type ReactNode } from "react"
+import { type ReactNode, useState } from "react"
+
+export type AppView = "dashboard" | "build-hosts"
 
 export function App() {
   const queryClient = useQueryClient()
+  const [activeView, setActiveView] = useState<AppView>("dashboard")
   const setupStatusQuery = useQuery({
     queryKey: ["setup-status"],
     queryFn: getSetupStatus,
@@ -63,11 +67,13 @@ export function App() {
 
   return (
     <AppShell
+      activeView={activeView}
       user={currentUserQuery.data}
       logoutPending={logoutMutation.isPending}
+      onNavigate={setActiveView}
       onLogout={() => logoutMutation.mutate()}
     >
-      <DashboardPage />
+      {activeView === "dashboard" ? <DashboardPage /> : <BuildHostsPage />}
     </AppShell>
   )
 }

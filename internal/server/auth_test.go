@@ -57,6 +57,53 @@ func TestAuthSetupLoginMeLogout(t *testing.T) {
 	getJSON(t, router, http.MethodGet, "/api/v1/auth/me", "", sessionCookie, http.StatusUnauthorized, nil)
 }
 
+func TestBuildHostsRequireAuthAndCRUD(t *testing.T) {
+	router := newAuthTestRouter(t)
+
+	getJSON(t, router, http.MethodGet, "/api/v1/build-hosts", "", nil, http.StatusUnauthorized, nil)
+
+	sessionCookie := initializeAdminAndLogin(t, router)
+	getJSON(t, router, http.MethodGet, "/api/v1/build-hosts", "", sessionCookie, http.StatusOK, func(body map[string]any) {
+		data := body["data"].([]any)
+		if len(data) != 1 {
+			t.Fatalf("expected default local build host, got %d hosts", len(data))
+		}
+		host := data[0].(map[string]any)
+		if host["connectionType"] != "local_docker" {
+			t.Fatalf("expected local_docker host, got %v", host["connectionType"])
+		}
+	})
+
+	var sshHostID string
+	postJSON(t, router, "/api/v1/build-hosts", `{"name":"SSH Builder","connectionType":"ssh","address":"192.0.2.10","port":22,"username":"builder","dockerCommand":"docker","maxConcurrency":1,"labels":["remote","arm64"]}`, sessionCookie, http.StatusCreated, func(rec *httptest.ResponseRecorder) {
+		body := decodeJSONBody(t, rec)
+		data := body["data"].(map[string]any)
+		sshHostID = data["id"].(string)
+		if data["connectionType"] != "ssh" {
+			t.Fatalf("expected ssh host, got %v", data["connectionType"])
+		}
+	})
+
+	postJSON(t, router, "/api/v1/build-hosts/"+sshHostID+"/disable", "", sessionCookie, http.StatusOK, func(rec *httptest.ResponseRecorder) {
+		body := decodeJSONBody(t, rec)
+		data := body["data"].(map[string]any)
+		if data["status"] != "disabled" {
+			t.Fatalf("expected disabled status, got %v", data["status"])
+		}
+	})
+
+	postJSON(t, router, "/api/v1/build-hosts/"+sshHostID+"/enable", "", sessionCookie, http.StatusOK, func(rec *httptest.ResponseRecorder) {
+		body := decodeJSONBody(t, rec)
+		data := body["data"].(map[string]any)
+		if data["status"] != "unknown" {
+			t.Fatalf("expected unknown status, got %v", data["status"])
+		}
+	})
+
+	getJSON(t, router, http.MethodDelete, "/api/v1/build-hosts/"+sshHostID, "", sessionCookie, http.StatusOK, nil)
+	getJSON(t, router, http.MethodGet, "/api/v1/build-hosts/"+sshHostID, "", sessionCookie, http.StatusNotFound, nil)
+}
+
 func newAuthTestRouter(t *testing.T) http.Handler {
 	t.Helper()
 
@@ -91,6 +138,25 @@ func newAuthTestRouter(t *testing.T) http.Handler {
 	}
 
 	return router
+}
+
+func initializeAdminAndLogin(t *testing.T, router http.Handler) *http.Cookie {
+	t.Helper()
+
+	postJSON(t, router, "/api/v1/setup/admin", `{"username":"admin","password":"ChangeMe123!","displayName":"Administrator"}`, nil, http.StatusCreated, nil)
+
+	var sessionCookie *http.Cookie
+	postJSON(t, router, "/api/v1/auth/login", `{"username":"admin","password":"ChangeMe123!"}`, nil, http.StatusOK, func(rec *httptest.ResponseRecorder) {
+		for _, cookie := range rec.Result().Cookies() {
+			if cookie.Name == auth.SessionCookieName {
+				sessionCookie = cookie
+			}
+		}
+	})
+	if sessionCookie == nil {
+		t.Fatalf("expected session cookie")
+	}
+	return sessionCookie
 }
 
 func postJSON(t *testing.T, router http.Handler, path string, body string, cookie *http.Cookie, expectedStatus int, assert func(*httptest.ResponseRecorder)) {
@@ -132,4 +198,14 @@ func getJSONRecorder(t *testing.T, router http.Handler, method string, path stri
 	if assert != nil {
 		assert(rec)
 	}
+}
+
+func decodeJSONBody(t *testing.T, rec *httptest.ResponseRecorder) map[string]any {
+	t.Helper()
+
+	var response map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	return response
 }
