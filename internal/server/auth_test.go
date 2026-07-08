@@ -157,6 +157,89 @@ func TestRegistriesRequireAuthAndCRUD(t *testing.T) {
 	getJSON(t, router, http.MethodGet, "/api/v1/registries/"+registryID, "", sessionCookie, http.StatusNotFound, nil)
 }
 
+func TestImageProjectsBranchesAndVersionNodes(t *testing.T) {
+	router := newAuthTestRouter(t)
+
+	getJSON(t, router, http.MethodGet, "/api/v1/image-projects", "", nil, http.StatusUnauthorized, nil)
+
+	sessionCookie := initializeAdminAndLogin(t, router)
+	var projectID string
+	postJSON(t, router, "/api/v1/image-projects", `{"name":"Java Runtime","imageType":"java","imageName":"java-runtime","namespace":"platform","rootImageRef":"eclipse-temurin:17","rootImageSource":"external_image","defaultArchitecture":"amd64","labels":["java","jdk17"],"description":"Base Java runtime."}`, sessionCookie, http.StatusCreated, func(rec *httptest.ResponseRecorder) {
+		body := decodeJSONBody(t, rec)
+		data := body["data"].(map[string]any)
+		projectID = data["id"].(string)
+		if data["latestVersion"] != "root" {
+			t.Fatalf("expected latest root version, got %v", data["latestVersion"])
+		}
+	})
+
+	var rootNodeID string
+	var mainBranchID string
+	getJSON(t, router, http.MethodGet, "/api/v1/image-projects/"+projectID+"/graph", "", sessionCookie, http.StatusOK, func(body map[string]any) {
+		data := body["data"].(map[string]any)
+		branches := data["branches"].([]any)
+		if len(branches) != 1 {
+			t.Fatalf("expected main branch, got %d branches", len(branches))
+		}
+		mainBranch := branches[0].(map[string]any)
+		mainBranchID = mainBranch["id"].(string)
+		if mainBranch["name"] != "main" {
+			t.Fatalf("expected main branch, got %v", mainBranch["name"])
+		}
+		nodes := data["nodes"].([]any)
+		if len(nodes) != 1 {
+			t.Fatalf("expected root node, got %d nodes", len(nodes))
+		}
+		rootNode := nodes[0].(map[string]any)
+		rootNodeID = rootNode["id"].(string)
+		if rootNode["version"] != "root" {
+			t.Fatalf("expected root node version, got %v", rootNode["version"])
+		}
+	})
+
+	var branchID string
+	postJSON(t, router, "/api/v1/image-projects/"+projectID+"/branches", `{"name":"jdk21","startNodeId":"`+rootNodeID+`","description":"Java 21 line."}`, sessionCookie, http.StatusCreated, func(rec *httptest.ResponseRecorder) {
+		body := decodeJSONBody(t, rec)
+		data := body["data"].(map[string]any)
+		branchID = data["id"].(string)
+		if data["headNodeId"] != rootNodeID {
+			t.Fatalf("expected branch head root, got %v", data["headNodeId"])
+		}
+	})
+
+	postJSON(t, router, "/api/v1/image-projects/"+projectID+"/version-nodes", `{"branchId":"`+branchID+`","parentNodeId":"`+rootNodeID+`","version":"jdk21-v1","dockerfile":"FROM eclipse-temurin:21\nRUN java -version\n","description":"Java 21 runtime.","status":"active"}`, sessionCookie, http.StatusCreated, func(rec *httptest.ResponseRecorder) {
+		body := decodeJSONBody(t, rec)
+		data := body["data"].(map[string]any)
+		if data["parentNodeId"] != rootNodeID {
+			t.Fatalf("expected parent root, got %v", data["parentNodeId"])
+		}
+	})
+
+	getJSON(t, router, http.MethodGet, "/api/v1/image-projects/"+projectID+"/graph", "", sessionCookie, http.StatusOK, func(body map[string]any) {
+		data := body["data"].(map[string]any)
+		branches := data["branches"].([]any)
+		nodes := data["nodes"].([]any)
+		edges := data["edges"].([]any)
+		if len(branches) != 2 {
+			t.Fatalf("expected two branches, got %d", len(branches))
+		}
+		if len(nodes) != 2 {
+			t.Fatalf("expected two nodes, got %d", len(nodes))
+		}
+		if len(edges) != 1 {
+			t.Fatalf("expected one edge, got %d", len(edges))
+		}
+	})
+
+	postJSON(t, router, "/api/v1/image-projects/"+projectID+"/branches/"+mainBranchID+"/archive", "", sessionCookie, http.StatusOK, func(rec *httptest.ResponseRecorder) {
+		body := decodeJSONBody(t, rec)
+		data := body["data"].(map[string]any)
+		if data["status"] != "archived" {
+			t.Fatalf("expected branch archived, got %v", data["status"])
+		}
+	})
+}
+
 func newAuthTestRouter(t *testing.T) http.Handler {
 	t.Helper()
 

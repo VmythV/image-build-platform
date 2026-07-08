@@ -17,6 +17,7 @@ import (
 	"github.com/VmythV/image-build-platform/internal/auth"
 	"github.com/VmythV/image-build-platform/internal/buildhost"
 	"github.com/VmythV/image-build-platform/internal/credential"
+	"github.com/VmythV/image-build-platform/internal/imageproject"
 	"github.com/VmythV/image-build-platform/internal/registry"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -43,6 +44,7 @@ func New(opts Options) (http.Handler, error) {
 	var authRoutes http.Handler
 	var buildHostRoutes http.Handler
 	var registryRoutes http.Handler
+	var imageProjectRoutes http.Handler
 	if opts.DB != nil {
 		service, err := auth.NewService(auth.ServiceOptions{
 			Repository: auth.NewRepository(opts.DB, opts.DriverName),
@@ -78,6 +80,11 @@ func New(opts Options) (http.Handler, error) {
 			registry.CommandDetector{},
 		)
 		registryRoutes = registry.NewHandler(registryService).Routes()
+
+		imageProjectService := imageproject.NewService(
+			imageproject.NewRepository(opts.DB, opts.DriverName),
+		)
+		imageProjectRoutes = imageproject.NewHandler(imageProjectService).Routes()
 	}
 
 	r := chi.NewRouter()
@@ -104,6 +111,12 @@ func New(opts Options) (http.Handler, error) {
 			r.Group(func(r chi.Router) {
 				r.Use(auth.Middleware(authHandler))
 				r.Mount("/registries", registryRoutes)
+			})
+		}
+		if imageProjectRoutes != nil {
+			r.Group(func(r chi.Router) {
+				r.Use(auth.Middleware(authHandler))
+				r.Mount("/image-projects", imageProjectRoutes)
 			})
 		}
 	})

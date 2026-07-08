@@ -22,7 +22,7 @@ const navigation = [
   { id: "dashboard", label: "Dashboard", icon: Home },
   { id: "build-hosts", label: "Build Hosts", icon: HardDrive },
   { id: "registries", label: "Registries", icon: Warehouse },
-  { id: "image-projects", label: "Image Projects", icon: GitBranch, disabled: true },
+  { id: "image-projects", label: "Image Projects", icon: GitBranch },
   { id: "build-tasks", label: "Build Tasks", icon: ListChecks, disabled: true },
   { id: "artifacts", label: "Artifacts", icon: Image, disabled: true },
   { id: "settings", label: "Settings", icon: Settings, disabled: true },
@@ -41,6 +41,7 @@ const viewTitles: Record<AppView, { title: string; subtitle: string }> = {
   dashboard: { title: "Dashboard", subtitle: "Platform overview" },
   "build-hosts": { title: "Build Hosts", subtitle: "Local and SSH builder capacity" },
   registries: { title: "Registries", subtitle: "Pull and push destinations" },
+  "image-projects": { title: "Image Projects", subtitle: "Root images, versions, and branches" },
 }
 
 export function AppShell({ children, activeView, user, logoutPending = false, onNavigate, onLogout }: AppShellProps) {

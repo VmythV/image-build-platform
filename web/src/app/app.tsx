@@ -5,11 +5,12 @@ import { LoginPage } from "@/pages/auth/login-page"
 import { SetupPage } from "@/pages/auth/setup-page"
 import { BuildHostsPage } from "@/pages/build-hosts/build-hosts-page"
 import { DashboardPage } from "@/pages/dashboard/dashboard-page"
+import { ImageProjectsPage } from "@/pages/image-projects/image-projects-page"
 import { RegistriesPage } from "@/pages/registries/registries-page"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { type ReactNode, useState } from "react"
 
-export type AppView = "dashboard" | "build-hosts" | "registries"
+export type AppView = "dashboard" | "build-hosts" | "registries" | "image-projects"
 
 export function App() {
   const queryClient = useQueryClient()
@@ -77,6 +78,7 @@ export function App() {
       {activeView === "dashboard" ? <DashboardPage /> : null}
       {activeView === "build-hosts" ? <BuildHostsPage /> : null}
       {activeView === "registries" ? <RegistriesPage /> : null}
+      {activeView === "image-projects" ? <ImageProjectsPage /> : null}
     </AppShell>
   )
 }
