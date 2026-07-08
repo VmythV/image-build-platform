@@ -21,7 +21,7 @@ import { cn } from "@/lib/utils"
 const navigation = [
   { id: "dashboard", label: "Dashboard", icon: Home },
   { id: "build-hosts", label: "Build Hosts", icon: HardDrive },
-  { id: "registries", label: "Registries", icon: Warehouse, disabled: true },
+  { id: "registries", label: "Registries", icon: Warehouse },
   { id: "image-projects", label: "Image Projects", icon: GitBranch, disabled: true },
   { id: "build-tasks", label: "Build Tasks", icon: ListChecks, disabled: true },
   { id: "artifacts", label: "Artifacts", icon: Image, disabled: true },
@@ -40,6 +40,7 @@ type AppShellProps = PropsWithChildren<{
 const viewTitles: Record<AppView, { title: string; subtitle: string }> = {
   dashboard: { title: "Dashboard", subtitle: "Platform overview" },
   "build-hosts": { title: "Build Hosts", subtitle: "Local and SSH builder capacity" },
+  registries: { title: "Registries", subtitle: "Pull and push destinations" },
 }
 
 export function AppShell({ children, activeView, user, logoutPending = false, onNavigate, onLogout }: AppShellProps) {

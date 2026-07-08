@@ -104,6 +104,59 @@ func TestBuildHostsRequireAuthAndCRUD(t *testing.T) {
 	getJSON(t, router, http.MethodGet, "/api/v1/build-hosts/"+sshHostID, "", sessionCookie, http.StatusNotFound, nil)
 }
 
+func TestRegistriesRequireAuthAndCRUD(t *testing.T) {
+	router := newAuthTestRouter(t)
+
+	getJSON(t, router, http.MethodGet, "/api/v1/registries", "", nil, http.StatusUnauthorized, nil)
+
+	sessionCookie := initializeAdminAndLogin(t, router)
+	var registryID string
+	postJSON(t, router, "/api/v1/registries", `{"name":"Internal Registry","type":"generic","endpoint":"registry.example.com","namespace":"platform","username":"robot","password":"registry-secret","allowPull":true,"allowPush":true,"isDefaultPull":false,"isDefaultPush":true,"tlsVerify":true,"insecureHttp":false}`, sessionCookie, http.StatusCreated, func(rec *httptest.ResponseRecorder) {
+		if strings.Contains(rec.Body.String(), "registry-secret") {
+			t.Fatalf("registry response leaked password")
+		}
+		body := decodeJSONBody(t, rec)
+		data := body["data"].(map[string]any)
+		registryID = data["id"].(string)
+		if data["credentialConfigured"] != true {
+			t.Fatalf("expected credentialConfigured true, got %v", data["credentialConfigured"])
+		}
+		if data["credentialUsername"] != "robot" {
+			t.Fatalf("expected credential username robot, got %v", data["credentialUsername"])
+		}
+	})
+
+	getJSONRecorder(t, router, http.MethodPut, "/api/v1/registries/"+registryID, `{"name":"Internal Registry Updated","type":"generic","endpoint":"registry.example.com","namespace":"platform","username":"robot","password":"","allowPull":true,"allowPush":true,"isDefaultPull":true,"isDefaultPush":true,"tlsVerify":true,"insecureHttp":false}`, sessionCookie, http.StatusOK, func(rec *httptest.ResponseRecorder) {
+		body := decodeJSONBody(t, rec)
+		data := body["data"].(map[string]any)
+		if data["credentialConfigured"] != true {
+			t.Fatalf("expected credential to remain configured")
+		}
+		if data["isDefaultPull"] != true {
+			t.Fatalf("expected default pull true, got %v", data["isDefaultPull"])
+		}
+	})
+
+	postJSON(t, router, "/api/v1/registries/"+registryID+"/disable", "", sessionCookie, http.StatusOK, func(rec *httptest.ResponseRecorder) {
+		body := decodeJSONBody(t, rec)
+		data := body["data"].(map[string]any)
+		if data["status"] != "disabled" {
+			t.Fatalf("expected disabled status, got %v", data["status"])
+		}
+	})
+
+	postJSON(t, router, "/api/v1/registries/"+registryID+"/enable", "", sessionCookie, http.StatusOK, func(rec *httptest.ResponseRecorder) {
+		body := decodeJSONBody(t, rec)
+		data := body["data"].(map[string]any)
+		if data["status"] != "unknown" {
+			t.Fatalf("expected unknown status, got %v", data["status"])
+		}
+	})
+
+	getJSON(t, router, http.MethodDelete, "/api/v1/registries/"+registryID, "", sessionCookie, http.StatusOK, nil)
+	getJSON(t, router, http.MethodGet, "/api/v1/registries/"+registryID, "", sessionCookie, http.StatusNotFound, nil)
+}
+
 func newAuthTestRouter(t *testing.T) http.Handler {
 	t.Helper()
 
@@ -132,6 +185,7 @@ func newAuthTestRouter(t *testing.T) http.Handler {
 		DB:         store.DB,
 		DriverName: store.DriverName,
 		SessionTTL: cfg.Security.SessionTTL,
+		SecretKey:  cfg.Security.SecretKey,
 	})
 	if err != nil {
 		t.Fatalf("new server: %v", err)

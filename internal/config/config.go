@@ -75,6 +75,7 @@ func Default() Config {
 			DSN:    "data/app.db",
 		},
 		Security: SecurityConfig{
+			SecretKey:    "change-me-use-a-long-random-secret",
 			SessionTTL:   "24h",
 			SecureCookie: false,
 			CSRFEnabled:  true,
@@ -170,6 +171,9 @@ func validate(cfg Config) error {
 	}
 	if strings.TrimSpace(cfg.Database.DSN) == "" {
 		return errors.New("database.dsn is required")
+	}
+	if len(strings.TrimSpace(cfg.Security.SecretKey)) < 32 {
+		return errors.New("security.secret_key must be at least 32 characters")
 	}
 	if cfg.Build.MaxGlobalConcurrency < 1 {
 		return errors.New("build.max_global_concurrency must be at least 1")

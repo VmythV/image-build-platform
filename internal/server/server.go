@@ -16,6 +16,8 @@ import (
 
 	"github.com/VmythV/image-build-platform/internal/auth"
 	"github.com/VmythV/image-build-platform/internal/buildhost"
+	"github.com/VmythV/image-build-platform/internal/credential"
+	"github.com/VmythV/image-build-platform/internal/registry"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 )
@@ -28,6 +30,7 @@ type Options struct {
 	DriverName   string
 	SessionTTL   string
 	SecureCookie bool
+	SecretKey    string
 }
 
 func New(opts Options) (http.Handler, error) {
@@ -39,6 +42,7 @@ func New(opts Options) (http.Handler, error) {
 	var authHandler auth.Handler
 	var authRoutes http.Handler
 	var buildHostRoutes http.Handler
+	var registryRoutes http.Handler
 	if opts.DB != nil {
 		service, err := auth.NewService(auth.ServiceOptions{
 			Repository: auth.NewRepository(opts.DB, opts.DriverName),
@@ -62,6 +66,18 @@ func New(opts Options) (http.Handler, error) {
 			return nil, fmt.Errorf("ensure default local build host: %w", err)
 		}
 		buildHostRoutes = buildhost.NewHandler(buildHostService).Routes()
+
+		credentialEncryptor, err := credential.NewEncryptor(opts.SecretKey)
+		if err != nil {
+			return nil, fmt.Errorf("initialize credential encryption: %w", err)
+		}
+		registryService := registry.NewService(
+			registry.NewRepository(opts.DB, opts.DriverName),
+			credential.NewRepository(opts.DB, opts.DriverName),
+			credentialEncryptor,
+			registry.CommandDetector{},
+		)
+		registryRoutes = registry.NewHandler(registryService).Routes()
 	}
 
 	r := chi.NewRouter()
@@ -82,6 +98,12 @@ func New(opts Options) (http.Handler, error) {
 			r.Group(func(r chi.Router) {
 				r.Use(auth.Middleware(authHandler))
 				r.Mount("/build-hosts", buildHostRoutes)
+			})
+		}
+		if registryRoutes != nil {
+			r.Group(func(r chi.Router) {
+				r.Use(auth.Middleware(authHandler))
+				r.Mount("/registries", registryRoutes)
 			})
 		}
 	})

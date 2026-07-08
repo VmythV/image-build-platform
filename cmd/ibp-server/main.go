@@ -63,6 +63,7 @@ func main() {
 		DriverName:   store.DriverName,
 		SessionTTL:   cfg.Security.SessionTTL,
 		SecureCookie: cfg.Security.SecureCookie,
+		SecretKey:    cfg.Security.SecretKey,
 	})
 	if err != nil {
 		logger.Error("initialize server", "error", err)
