@@ -281,6 +281,106 @@ func TestDockerfileGenerateAndValidateRequireAuth(t *testing.T) {
 	})
 }
 
+func TestBuildTasksQueueDispatchCancelAndRetry(t *testing.T) {
+	router := newAuthTestRouter(t)
+
+	getJSON(t, router, http.MethodGet, "/api/v1/build-tasks", "", nil, http.StatusUnauthorized, nil)
+
+	sessionCookie := initializeAdminAndLogin(t, router)
+	postJSON(t, router, "/api/v1/registries", `{"name":"Push Registry","type":"generic","endpoint":"registry.example.com","namespace":"platform","allowPull":true,"allowPush":true,"isDefaultPull":false,"isDefaultPush":true,"tlsVerify":true,"insecureHttp":false}`, sessionCookie, http.StatusCreated, nil)
+
+	var projectID string
+	postJSON(t, router, "/api/v1/image-projects", `{"name":"Java Runtime","imageType":"java","imageName":"java-runtime","namespace":"platform","rootImageRef":"eclipse-temurin:17","rootImageSource":"external_image","defaultArchitecture":"amd64","labels":["java"],"description":"Base Java runtime."}`, sessionCookie, http.StatusCreated, func(rec *httptest.ResponseRecorder) {
+		body := decodeJSONBody(t, rec)
+		data := body["data"].(map[string]any)
+		projectID = data["id"].(string)
+	})
+
+	var rootNodeID string
+	getJSON(t, router, http.MethodGet, "/api/v1/image-projects/"+projectID+"/graph", "", sessionCookie, http.StatusOK, func(body map[string]any) {
+		data := body["data"].(map[string]any)
+		nodes := data["nodes"].([]any)
+		rootNodeID = nodes[0].(map[string]any)["id"].(string)
+	})
+
+	var taskID string
+	postJSON(t, router, "/api/v1/build-tasks", `{"projectId":"`+projectID+`","versionNodeId":"`+rootNodeID+`","architecture":"amd64","imageTag":"root","buildArgs":{"APP_ENV":"test"}}`, sessionCookie, http.StatusCreated, func(rec *httptest.ResponseRecorder) {
+		body := decodeJSONBody(t, rec)
+		data := body["data"].(map[string]any)
+		taskID = data["id"].(string)
+		if data["status"] != "queued" {
+			t.Fatalf("expected queued status, got %v", data["status"])
+		}
+		if data["imageRef"] != "registry.example.com/platform/java-runtime:root" {
+			t.Fatalf("expected image ref, got %v", data["imageRef"])
+		}
+	})
+
+	postJSON(t, router, "/api/v1/build-tasks/"+taskID+"/dispatch", "", sessionCookie, http.StatusOK, func(rec *httptest.ResponseRecorder) {
+		body := decodeJSONBody(t, rec)
+		data := body["data"].(map[string]any)
+		if data["dispatched"] != true {
+			t.Fatalf("expected dispatched true, got %v", data["dispatched"])
+		}
+		task := data["task"].(map[string]any)
+		if task["status"] != "dispatching" {
+			t.Fatalf("expected dispatching status, got %v", task["status"])
+		}
+		if task["hostId"] == nil {
+			t.Fatalf("expected host id after dispatch")
+		}
+	})
+
+	getJSON(t, router, http.MethodGet, "/api/v1/build-hosts", "", sessionCookie, http.StatusOK, func(body map[string]any) {
+		data := body["data"].([]any)
+		host := data[0].(map[string]any)
+		if host["currentRunning"] != float64(1) {
+			t.Fatalf("expected host running count 1, got %v", host["currentRunning"])
+		}
+	})
+
+	postJSON(t, router, "/api/v1/build-tasks/"+taskID+"/cancel", "", sessionCookie, http.StatusOK, func(rec *httptest.ResponseRecorder) {
+		body := decodeJSONBody(t, rec)
+		data := body["data"].(map[string]any)
+		if data["status"] != "canceled" {
+			t.Fatalf("expected canceled status, got %v", data["status"])
+		}
+	})
+
+	getJSON(t, router, http.MethodGet, "/api/v1/build-hosts", "", sessionCookie, http.StatusOK, func(body map[string]any) {
+		data := body["data"].([]any)
+		host := data[0].(map[string]any)
+		if host["currentRunning"] != float64(0) {
+			t.Fatalf("expected host running count 0, got %v", host["currentRunning"])
+		}
+	})
+
+	var retryTaskID string
+	postJSON(t, router, "/api/v1/build-tasks/"+taskID+"/retry", "", sessionCookie, http.StatusCreated, func(rec *httptest.ResponseRecorder) {
+		body := decodeJSONBody(t, rec)
+		data := body["data"].(map[string]any)
+		retryTaskID = data["id"].(string)
+		if data["status"] != "queued" {
+			t.Fatalf("expected retry queued, got %v", data["status"])
+		}
+		if data["retryOfTaskId"] != taskID {
+			t.Fatalf("expected retryOfTaskId %s, got %v", taskID, data["retryOfTaskId"])
+		}
+	})
+
+	postJSON(t, router, "/api/v1/build-tasks/dispatch-next", "", sessionCookie, http.StatusOK, func(rec *httptest.ResponseRecorder) {
+		body := decodeJSONBody(t, rec)
+		data := body["data"].(map[string]any)
+		task := data["task"].(map[string]any)
+		if task["id"] != retryTaskID {
+			t.Fatalf("expected dispatch next retry task %s, got %v", retryTaskID, task["id"])
+		}
+		if task["status"] != "dispatching" {
+			t.Fatalf("expected retry dispatching, got %v", task["status"])
+		}
+	})
+}
+
 func newAuthTestRouter(t *testing.T) http.Handler {
 	t.Helper()
 

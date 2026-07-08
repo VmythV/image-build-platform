@@ -4,13 +4,14 @@ import { getCurrentUser, getSetupStatus, logout, type User } from "@/lib/auth-ap
 import { LoginPage } from "@/pages/auth/login-page"
 import { SetupPage } from "@/pages/auth/setup-page"
 import { BuildHostsPage } from "@/pages/build-hosts/build-hosts-page"
+import { BuildTasksPage } from "@/pages/build-tasks/build-tasks-page"
 import { DashboardPage } from "@/pages/dashboard/dashboard-page"
 import { ImageProjectsPage } from "@/pages/image-projects/image-projects-page"
 import { RegistriesPage } from "@/pages/registries/registries-page"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { type ReactNode, useState } from "react"
 
-export type AppView = "dashboard" | "build-hosts" | "registries" | "image-projects"
+export type AppView = "dashboard" | "build-hosts" | "registries" | "image-projects" | "build-tasks"
 
 export function App() {
   const queryClient = useQueryClient()
@@ -79,6 +80,7 @@ export function App() {
       {activeView === "build-hosts" ? <BuildHostsPage /> : null}
       {activeView === "registries" ? <RegistriesPage /> : null}
       {activeView === "image-projects" ? <ImageProjectsPage /> : null}
+      {activeView === "build-tasks" ? <BuildTasksPage /> : null}
     </AppShell>
   )
 }

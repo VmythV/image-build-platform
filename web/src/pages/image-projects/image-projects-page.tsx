@@ -19,6 +19,7 @@ import {
   GitBranch,
   Loader2,
   Plus,
+  Rocket,
   Search,
   Split,
   Wand2,
@@ -27,6 +28,8 @@ import {
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 
 import { Button } from "@/components/ui/button"
+import { listBuildHosts, type BuildHost } from "@/lib/build-hosts-api"
+import { createBuildTask, type BuildTask } from "@/lib/build-tasks-api"
 import {
   generateDockerfile,
   validateDockerfile,
@@ -48,6 +51,7 @@ import {
   type VersionGraph,
   type VersionNode,
 } from "@/lib/image-projects-api"
+import { listRegistries, type Registry } from "@/lib/registries-api"
 import { cn } from "@/lib/utils"
 
 type ProjectFormState = {
@@ -84,6 +88,15 @@ type GeneratorFormState = {
   environment: string
 }
 
+type BuildFormState = {
+  registryId: string
+  requestedHostId: string
+  architecture: string
+  imageName: string
+  imageTag: string
+  buildArgs: string
+}
+
 type FlowData = {
   label: ReactNode
 }
@@ -108,6 +121,15 @@ const defaultGeneratorForm: GeneratorFormState = {
   environment: "APP_ENV=production",
 }
 
+const defaultBuildForm: BuildFormState = {
+  registryId: "",
+  requestedHostId: "",
+  architecture: "",
+  imageName: "",
+  imageTag: "",
+  buildArgs: "",
+}
+
 export function ImageProjectsPage() {
   const queryClient = useQueryClient()
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
@@ -124,10 +146,13 @@ export function ImageProjectsPage() {
     description: "",
   })
   const [generatorForm, setGeneratorForm] = useState(defaultGeneratorForm)
+  const [buildForm, setBuildForm] = useState(defaultBuildForm)
   const [dockerfileDraft, setDockerfileDraft] = useState("")
   const [validationResult, setValidationResult] = useState<DockerfileValidationResult | null>(null)
   const [compareNodeId, setCompareNodeId] = useState("")
   const [diffText, setDiffText] = useState("")
+  const [buildTaskResult, setBuildTaskResult] = useState<BuildTask | null>(null)
+  const [buildTaskError, setBuildTaskError] = useState("")
   const [keyword, setKeyword] = useState("")
 
   const projectsQuery = useQuery({
@@ -146,6 +171,16 @@ export function ImageProjectsPage() {
     enabled: selectedProject != null,
   })
 
+  const registriesQuery = useQuery({
+    queryKey: ["registries"],
+    queryFn: listRegistries,
+  })
+
+  const buildHostsQuery = useQuery({
+    queryKey: ["build-hosts"],
+    queryFn: listBuildHosts,
+  })
+
   const selectedNode = useMemo(() => {
     const nodes = graphQuery.data?.nodes ?? []
     return nodes.find((node) => node.id === selectedNodeId) ?? nodes[0] ?? null
@@ -157,6 +192,16 @@ export function ImageProjectsPage() {
     setCompareNodeId("")
     setDiffText("")
   }, [selectedNode?.id, selectedNode?.dockerfile])
+
+  useEffect(() => {
+    setBuildForm({
+      ...defaultBuildForm,
+      architecture: selectedProject?.defaultArchitecture ?? "",
+      imageTag: selectedNode?.version ?? "",
+    })
+    setBuildTaskResult(null)
+    setBuildTaskError("")
+  }, [selectedNode?.id, selectedNode?.version, selectedProject?.defaultArchitecture])
 
   const filteredProjects = useMemo(() => {
     const value = keyword.trim().toLowerCase()
@@ -255,6 +300,29 @@ export function ImageProjectsPage() {
     onSuccess: (diff) => setDiffText(diff.unifiedDiff),
   })
 
+  const createBuildTaskMutation = useMutation({
+    mutationFn: ({ projectId, nodeId, input }: { projectId: string; nodeId: string; input: BuildFormState }) =>
+      createBuildTask({
+        projectId,
+        versionNodeId: nodeId,
+        registryId: input.registryId,
+        requestedHostId: input.requestedHostId,
+        architecture: input.architecture,
+        imageName: input.imageName,
+        imageTag: input.imageTag,
+        buildArgs: parseKeyValues(input.buildArgs),
+      }),
+    onSuccess: (task) => {
+      setBuildTaskResult(task)
+      setBuildTaskError("")
+      return queryClient.invalidateQueries({ queryKey: ["build-tasks"] })
+    },
+    onError: (error) => {
+      setBuildTaskResult(null)
+      setBuildTaskError(error instanceof Error ? error.message : "创建构建任务失败。")
+    },
+  })
+
   async function handleCreateProject(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     setProjectError("")
@@ -317,10 +385,15 @@ export function ImageProjectsPage() {
             branchForm={branchForm}
             nodeForm={nodeForm}
             generatorForm={generatorForm}
+            buildForm={buildForm}
+            registries={registriesQuery.data ?? []}
+            buildHosts={buildHostsQuery.data ?? []}
             dockerfileDraft={dockerfileDraft}
             validationResult={validationResult}
             compareNodeId={compareNodeId}
             diffText={diffText}
+            buildTaskResult={buildTaskResult}
+            buildTaskError={buildTaskError}
             createBranchPending={createBranchMutation.isPending}
             createNodePending={createNodeMutation.isPending}
             archiveProjectPending={archiveProjectMutation.isPending}
@@ -329,12 +402,14 @@ export function ImageProjectsPage() {
             validatePending={validateMutation.isPending}
             generatePending={generateMutation.isPending}
             diffPending={diffMutation.isPending}
+            createBuildTaskPending={createBuildTaskMutation.isPending}
             onSelectNode={setSelectedNodeId}
             onPrepareBranch={prepareBranchFromNode}
             onPrepareVersion={prepareVersionFromNode}
             onBranchFormChange={setBranchForm}
             onNodeFormChange={setNodeForm}
             onGeneratorFormChange={setGeneratorForm}
+            onBuildFormChange={setBuildForm}
             onDockerfileDraftChange={setDockerfileDraft}
             onCompareNodeChange={setCompareNodeId}
             onCreateBranch={() => {
@@ -359,6 +434,11 @@ export function ImageProjectsPage() {
             onDiff={() => {
               if (selectedProject && selectedNode && compareNodeId) {
                 diffMutation.mutate({ projectId: selectedProject.id, leftNodeId: compareNodeId, rightNodeId: selectedNode.id })
+              }
+            }}
+            onCreateBuildTask={() => {
+              if (selectedProject && selectedNode) {
+                createBuildTaskMutation.mutate({ projectId: selectedProject.id, nodeId: selectedNode.id, input: buildForm })
               }
             }}
           />
@@ -505,10 +585,15 @@ function GraphWorkspace({
   branchForm,
   nodeForm,
   generatorForm,
+  buildForm,
+  registries,
+  buildHosts,
   dockerfileDraft,
   validationResult,
   compareNodeId,
   diffText,
+  buildTaskResult,
+  buildTaskError,
   createBranchPending,
   createNodePending,
   archiveProjectPending,
@@ -517,12 +602,14 @@ function GraphWorkspace({
   validatePending,
   generatePending,
   diffPending,
+  createBuildTaskPending,
   onSelectNode,
   onPrepareBranch,
   onPrepareVersion,
   onBranchFormChange,
   onNodeFormChange,
   onGeneratorFormChange,
+  onBuildFormChange,
   onDockerfileDraftChange,
   onCompareNodeChange,
   onCreateBranch,
@@ -533,16 +620,22 @@ function GraphWorkspace({
   onValidateDockerfile,
   onGenerateDockerfile,
   onDiff,
+  onCreateBuildTask,
 }: {
   graph: VersionGraph
   selectedNode: VersionNode | null
   branchForm: BranchFormState
   nodeForm: NodeFormState
   generatorForm: GeneratorFormState
+  buildForm: BuildFormState
+  registries: Registry[]
+  buildHosts: BuildHost[]
   dockerfileDraft: string
   validationResult: DockerfileValidationResult | null
   compareNodeId: string
   diffText: string
+  buildTaskResult: BuildTask | null
+  buildTaskError: string
   createBranchPending: boolean
   createNodePending: boolean
   archiveProjectPending: boolean
@@ -551,12 +644,14 @@ function GraphWorkspace({
   validatePending: boolean
   generatePending: boolean
   diffPending: boolean
+  createBuildTaskPending: boolean
   onSelectNode: (nodeId: string) => void
   onPrepareBranch: (node: VersionNode) => void
   onPrepareVersion: (node: VersionNode, graph: VersionGraph) => void
   onBranchFormChange: Dispatch<SetStateAction<BranchFormState>>
   onNodeFormChange: Dispatch<SetStateAction<NodeFormState>>
   onGeneratorFormChange: Dispatch<SetStateAction<GeneratorFormState>>
+  onBuildFormChange: Dispatch<SetStateAction<BuildFormState>>
   onDockerfileDraftChange: (value: string) => void
   onCompareNodeChange: (value: string) => void
   onCreateBranch: () => void
@@ -567,6 +662,7 @@ function GraphWorkspace({
   onValidateDockerfile: () => void
   onGenerateDockerfile: () => void
   onDiff: () => void
+  onCreateBuildTask: () => void
 }) {
   const activeBranches = graph.branches.filter((branch) => branch.status === "active")
   const flow = useMemo(() => toFlow(graph, selectedNode?.id), [graph, selectedNode?.id])
@@ -634,16 +730,24 @@ function GraphWorkspace({
             validationResult={validationResult}
             compareNodeId={compareNodeId}
             diffText={diffText}
+            buildForm={buildForm}
+            registries={registries}
+            buildHosts={buildHosts}
+            buildTaskResult={buildTaskResult}
+            buildTaskError={buildTaskError}
             saveNodePending={saveNodePending}
             validatePending={validatePending}
             diffPending={diffPending}
+            createBuildTaskPending={createBuildTaskPending}
             onPrepareBranch={onPrepareBranch}
             onPrepareVersion={onPrepareVersion}
+            onBuildFormChange={onBuildFormChange}
             onDockerfileDraftChange={onDockerfileDraftChange}
             onCompareNodeChange={onCompareNodeChange}
             onSaveDockerfile={onSaveDockerfile}
             onValidateDockerfile={onValidateDockerfile}
             onDiff={onDiff}
+            onCreateBuildTask={onCreateBuildTask}
           />
           <CreateBranchPanel
             graph={graph}
@@ -709,16 +813,24 @@ function NodeDetailPanel({
   validationResult,
   compareNodeId,
   diffText,
+  buildForm,
+  registries,
+  buildHosts,
+  buildTaskResult,
+  buildTaskError,
   saveNodePending,
   validatePending,
   diffPending,
+  createBuildTaskPending,
   onPrepareBranch,
   onPrepareVersion,
+  onBuildFormChange,
   onDockerfileDraftChange,
   onCompareNodeChange,
   onSaveDockerfile,
   onValidateDockerfile,
   onDiff,
+  onCreateBuildTask,
 }: {
   graph: VersionGraph
   selectedNode: VersionNode | null
@@ -726,16 +838,24 @@ function NodeDetailPanel({
   validationResult: DockerfileValidationResult | null
   compareNodeId: string
   diffText: string
+  buildForm: BuildFormState
+  registries: Registry[]
+  buildHosts: BuildHost[]
+  buildTaskResult: BuildTask | null
+  buildTaskError: string
   saveNodePending: boolean
   validatePending: boolean
   diffPending: boolean
+  createBuildTaskPending: boolean
   onPrepareBranch: (node: VersionNode) => void
   onPrepareVersion: (node: VersionNode, graph: VersionGraph) => void
+  onBuildFormChange: Dispatch<SetStateAction<BuildFormState>>
   onDockerfileDraftChange: (value: string) => void
   onCompareNodeChange: (value: string) => void
   onSaveDockerfile: (node: VersionNode) => void
   onValidateDockerfile: () => void
   onDiff: () => void
+  onCreateBuildTask: () => void
 }) {
   return (
     <section className="rounded-lg border bg-card p-4 text-card-foreground">
@@ -802,11 +922,95 @@ function NodeDetailPanel({
             </Button>
             {diffText ? <pre className="max-h-56 overflow-auto rounded-md border bg-card p-3 text-xs">{diffText}</pre> : null}
           </div>
+
+          <CreateBuildTaskPanel
+            form={buildForm}
+            registries={registries}
+            buildHosts={buildHosts}
+            result={buildTaskResult}
+            error={buildTaskError}
+            pending={createBuildTaskPending}
+            onFormChange={onBuildFormChange}
+            onCreate={onCreateBuildTask}
+          />
         </div>
       ) : (
         <p className="mt-2 text-sm text-muted-foreground">Select a node to edit Dockerfile and create descendants.</p>
       )}
     </section>
+  )
+}
+
+function CreateBuildTaskPanel({
+  form,
+  registries,
+  buildHosts,
+  result,
+  error,
+  pending,
+  onFormChange,
+  onCreate,
+}: {
+  form: BuildFormState
+  registries: Registry[]
+  buildHosts: BuildHost[]
+  result: BuildTask | null
+  error: string
+  pending: boolean
+  onFormChange: Dispatch<SetStateAction<BuildFormState>>
+  onCreate: () => void
+}) {
+  const pushRegistries = registries.filter((registry) => registry.allowPush && registry.status !== "disabled")
+  const schedulableHosts = buildHosts.filter((host) => host.status !== "disabled")
+
+  return (
+    <div className="space-y-3 rounded-md border bg-background p-3">
+      <div className="flex items-center gap-2 text-sm font-medium">
+        <Rocket className="size-4" aria-hidden="true" />
+        Build Task
+      </div>
+      <Field label="Registry">
+        <select className={inputClassName} value={form.registryId} onChange={(event) => updateForm(onFormChange, "registryId", event.target.value)}>
+          <option value="">Use project/default push registry</option>
+          {pushRegistries.map((registry) => (
+            <option key={registry.id} value={registry.id}>
+              {registry.name}
+            </option>
+          ))}
+        </select>
+      </Field>
+      <Field label="Build Host">
+        <select className={inputClassName} value={form.requestedHostId} onChange={(event) => updateForm(onFormChange, "requestedHostId", event.target.value)}>
+          <option value="">Auto schedule</option>
+          {schedulableHosts.map((host) => (
+            <option key={host.id} value={host.id}>
+              {host.name}
+              {host.architecture ? ` (${host.architecture})` : ""}
+            </option>
+          ))}
+        </select>
+      </Field>
+      <div className="grid gap-2 sm:grid-cols-2">
+        <Field label="Architecture">
+          <input className={inputClassName} value={form.architecture} onChange={(event) => updateForm(onFormChange, "architecture", event.target.value)} />
+        </Field>
+        <Field label="Image Tag">
+          <input className={inputClassName} value={form.imageTag} onChange={(event) => updateForm(onFormChange, "imageTag", event.target.value)} />
+        </Field>
+      </div>
+      <Field label="Image Name">
+        <input className={inputClassName} value={form.imageName} onChange={(event) => updateForm(onFormChange, "imageName", event.target.value)} />
+      </Field>
+      <Field label="Build Args">
+        <input className={inputClassName} value={form.buildArgs} onChange={(event) => updateForm(onFormChange, "buildArgs", event.target.value)} />
+      </Field>
+      {error ? <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div> : null}
+      {result ? <div className="rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-sm text-sky-700">Queued: {result.imageRef}</div> : null}
+      <Button className="w-full" onClick={onCreate} disabled={pending}>
+        {pending ? <Loader2 className="animate-spin" aria-hidden="true" /> : <Rocket aria-hidden="true" />}
+        Create Build Task
+      </Button>
+    </div>
   )
 }
 

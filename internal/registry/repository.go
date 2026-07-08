@@ -71,6 +71,23 @@ func (r Repository) FindByID(ctx context.Context, id string) (Registry, error) {
 	return registry, nil
 }
 
+func (r Repository) FindDefaultPush(ctx context.Context) (Registry, error) {
+	query := selectRegistrySQL + `
+WHERE r.is_default_push = ` + placeholder(r.driverName, 1) + `
+  AND r.allow_push = ` + placeholder(r.driverName, 2) + `
+  AND r.deleted_at IS NULL
+ORDER BY r.created_at DESC
+LIMIT 1`
+	registry, err := scanRegistry(r.db.QueryRowContext(ctx, query, true, true))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Registry{}, ErrNotFound
+		}
+		return Registry{}, err
+	}
+	return registry, nil
+}
+
 func (r Repository) Create(ctx context.Context, registry Registry) error {
 	query := `
 INSERT INTO registries (
