@@ -224,23 +224,9 @@ func (s Service) Start(ctx context.Context, taskID string) (BuildTask, error) {
 }
 
 func (s Service) ReadLogs(ctx context.Context, taskID string) (string, string, error) {
-	task, err := s.repo.FindByID(ctx, taskID)
+	_, logPath, filename, err := s.LogFile(ctx, taskID)
 	if err != nil {
 		return "", "", err
-	}
-	if task.LogPath == "" {
-		return "", "", ErrLogsNotFound
-	}
-	cleanLogRoot, err := filepath.Abs(s.logDir)
-	if err != nil {
-		return "", "", err
-	}
-	logPath, err := filepath.Abs(task.LogPath)
-	if err != nil {
-		return "", "", err
-	}
-	if !strings.HasPrefix(logPath, cleanLogRoot+string(os.PathSeparator)) && logPath != cleanLogRoot {
-		return "", "", ErrLogsNotFound
 	}
 	data, err := os.ReadFile(logPath)
 	if err != nil {
@@ -249,7 +235,29 @@ func (s Service) ReadLogs(ctx context.Context, taskID string) (string, string, e
 		}
 		return "", "", err
 	}
-	return string(data), filepath.Base(logPath), nil
+	return string(data), filename, nil
+}
+
+func (s Service) LogFile(ctx context.Context, taskID string) (BuildTask, string, string, error) {
+	task, err := s.repo.FindByID(ctx, taskID)
+	if err != nil {
+		return BuildTask{}, "", "", err
+	}
+	if task.LogPath == "" {
+		return BuildTask{}, "", "", ErrLogsNotFound
+	}
+	cleanLogRoot, err := filepath.Abs(s.logDir)
+	if err != nil {
+		return BuildTask{}, "", "", err
+	}
+	logPath, err := filepath.Abs(task.LogPath)
+	if err != nil {
+		return BuildTask{}, "", "", err
+	}
+	if !strings.HasPrefix(logPath, cleanLogRoot+string(os.PathSeparator)) && logPath != cleanLogRoot {
+		return BuildTask{}, "", "", ErrLogsNotFound
+	}
+	return task, logPath, filepath.Base(logPath), nil
 }
 
 func (s Service) runLocalBuild(taskID string) {

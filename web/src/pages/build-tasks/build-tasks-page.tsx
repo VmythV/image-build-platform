@@ -1,8 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { ArchiveX, GitBranch, Loader2, Play, RotateCcw, ScrollText, Server, XCircle } from "lucide-react"
-import { type ReactNode, useEffect, useMemo, useState } from "react"
+import { ArchiveX, GitBranch, Loader2, Play, Radio, RotateCcw, ScrollText, Server, XCircle } from "lucide-react"
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react"
 
 import { Button } from "@/components/ui/button"
+import { apiURL } from "@/lib/api"
 import {
   cancelBuildTask,
   dispatchBuildTask,
@@ -33,6 +34,9 @@ export function BuildTasksPage() {
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null)
   const [logText, setLogText] = useState("")
   const [logError, setLogError] = useState("")
+  const [streamingTaskId, setStreamingTaskId] = useState<string | null>(null)
+  const [streamConnected, setStreamConnected] = useState(false)
+  const logStreamRef = useRef<EventSource | null>(null)
 
   const tasksQuery = useQuery({
     queryKey: ["build-tasks"],
@@ -43,12 +47,77 @@ export function BuildTasksPage() {
   const tasks = tasksQuery.data ?? []
   const selectedTask = useMemo(() => tasks.find((task) => task.id === selectedTaskId) ?? tasks[0] ?? null, [selectedTaskId, tasks])
 
-  const invalidateTasks = () => queryClient.invalidateQueries({ queryKey: ["build-tasks"] })
+  const invalidateTasks = useCallback(() => queryClient.invalidateQueries({ queryKey: ["build-tasks"] }), [queryClient])
+
+  const stopLogStream = useCallback(() => {
+    logStreamRef.current?.close()
+    logStreamRef.current = null
+    setStreamingTaskId(null)
+    setStreamConnected(false)
+  }, [])
+
+  const startLogStream = useCallback(
+    (task: BuildTask) => {
+      stopLogStream()
+      setLogText("")
+      setLogError("")
+      setStreamingTaskId(task.id)
+      setStreamConnected(false)
+
+      const source = new EventSource(apiURL(`/api/v1/build-tasks/${task.id}/logs/stream`), { withCredentials: true })
+      logStreamRef.current = source
+
+      source.onopen = () => {
+        if (logStreamRef.current === source) {
+          setStreamConnected(true)
+        }
+      }
+      source.addEventListener("log", (event) => {
+        if (logStreamRef.current !== source) {
+          return
+        }
+        const message = event as MessageEvent<string>
+        setLogText((current) => appendLogChunk(current, message.data))
+      })
+      source.addEventListener("done", (event) => {
+        if (logStreamRef.current !== source) {
+          return
+        }
+        const message = event as MessageEvent<string>
+        source.close()
+        logStreamRef.current = null
+        setStreamingTaskId(null)
+        setStreamConnected(false)
+        setLogError("")
+        setLogText((current) => appendLogChunk(current, `Build finished with status: ${message.data}`))
+        void invalidateTasks()
+      })
+      source.onerror = () => {
+        if (logStreamRef.current !== source) {
+          return
+        }
+        source.close()
+        logStreamRef.current = null
+        setStreamingTaskId(null)
+        setStreamConnected(false)
+        setLogError("Log stream disconnected or unavailable.")
+      }
+    },
+    [invalidateTasks, stopLogStream],
+  )
 
   useEffect(() => {
     setLogText("")
     setLogError("")
   }, [selectedTask?.id])
+
+  useEffect(() => {
+    if (streamingTaskId && selectedTask?.id !== streamingTaskId) {
+      stopLogStream()
+    }
+  }, [selectedTask?.id, stopLogStream, streamingTaskId])
+
+  useEffect(() => stopLogStream, [stopLogStream])
 
   const dispatchNextMutation = useMutation({
     mutationFn: dispatchNextBuildTask,
@@ -169,11 +238,15 @@ export function BuildTasksPage() {
         cancelPending={cancelMutation.isPending}
         retryPending={retryMutation.isPending}
         logsPending={logsMutation.isPending}
+        streaming={streamingTaskId === selectedTask?.id}
+        streamConnected={streamConnected}
         onDispatch={(task) => dispatchMutation.mutate(task.id)}
         onStart={(task) => startMutation.mutate(task.id)}
         onCancel={(task) => cancelMutation.mutate(task.id)}
         onRetry={(task) => retryMutation.mutate(task.id)}
         onLoadLogs={(task) => logsMutation.mutate(task.id)}
+        onStreamLogs={startLogStream}
+        onStopLogs={stopLogStream}
       />
     </div>
   )
@@ -188,11 +261,15 @@ function TaskDetail({
   cancelPending,
   retryPending,
   logsPending,
+  streaming,
+  streamConnected,
   onDispatch,
   onStart,
   onCancel,
   onRetry,
   onLoadLogs,
+  onStreamLogs,
+  onStopLogs,
 }: {
   task: BuildTask | null
   logText: string
@@ -202,11 +279,15 @@ function TaskDetail({
   cancelPending: boolean
   retryPending: boolean
   logsPending: boolean
+  streaming: boolean
+  streamConnected: boolean
   onDispatch: (task: BuildTask) => void
   onStart: (task: BuildTask) => void
   onCancel: (task: BuildTask) => void
   onRetry: (task: BuildTask) => void
   onLoadLogs: (task: BuildTask) => void
+  onStreamLogs: (task: BuildTask) => void
+  onStopLogs: () => void
 }) {
   return (
     <aside className="rounded-lg border bg-card p-4 text-card-foreground">
@@ -240,9 +321,13 @@ function TaskDetail({
               {retryPending ? <Loader2 className="animate-spin" aria-hidden="true" /> : <RotateCcw aria-hidden="true" />}
               Retry
             </Button>
-            <Button className="col-span-2" variant="outline" size="sm" onClick={() => onLoadLogs(task)} disabled={!task.logPath || logsPending}>
+            <Button variant="outline" size="sm" onClick={() => onLoadLogs(task)} disabled={!task.logPath || logsPending || streaming}>
               {logsPending ? <Loader2 className="animate-spin" aria-hidden="true" /> : <ScrollText aria-hidden="true" />}
               Load Logs
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => (streaming ? onStopLogs() : onStreamLogs(task))} disabled={!task.logPath && !streaming}>
+              {streaming && !streamConnected ? <Loader2 className="animate-spin" aria-hidden="true" /> : streaming ? <XCircle aria-hidden="true" /> : <Radio aria-hidden="true" />}
+              {streaming ? "Stop Stream" : "Stream Logs"}
             </Button>
           </div>
 
@@ -254,6 +339,7 @@ function TaskDetail({
 
           {task.schedulerReason ? <InfoBlock title="Scheduler" detail={task.schedulerReason} /> : null}
           {task.errorMessage ? <InfoBlock title={task.errorCode || "Error"} detail={task.errorMessage} tone="danger" /> : null}
+          {streaming ? <InfoBlock title="Logs" detail={streamConnected ? "Log stream connected." : "Connecting to log stream."} /> : null}
           {logError ? <InfoBlock title="Logs" detail={logError} tone="danger" /> : null}
 
           {logText ? (
@@ -324,6 +410,16 @@ function StatusPill({ status }: { status: BuildTaskStatus }) {
 
 function Pill({ children }: { children: ReactNode }) {
   return <span className="inline-flex items-center rounded-md bg-secondary px-1.5 py-0.5 text-xs text-secondary-foreground">{children}</span>
+}
+
+function appendLogChunk(current: string, chunk: string) {
+  if (!chunk) {
+    return current
+  }
+  if (!current) {
+    return `${chunk}\n`
+  }
+  return current.endsWith("\n") ? `${current}${chunk}\n` : `${current}\n${chunk}\n`
 }
 
 function statusClass(status: BuildTaskStatus) {

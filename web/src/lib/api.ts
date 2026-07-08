@@ -25,6 +25,10 @@ export class ApiRequestError extends Error {
   }
 }
 
+export function apiURL(path: string): string {
+  return `${apiBaseURL}${path}`
+}
+
 export async function apiFetch<T>(path: string, options: ApiFetchOptions = {}): Promise<T> {
   const { json, headers, ...requestOptions } = options
   const requestHeaders = new Headers(headers)

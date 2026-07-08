@@ -3,9 +3,14 @@ package buildtask
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/VmythV/image-build-platform/internal/auth"
 	"github.com/go-chi/chi/v5"
@@ -29,6 +34,7 @@ func (h Handler) Routes() http.Handler {
 	r.Post("/{id}/start", h.start)
 	r.Post("/{id}/cancel", h.cancel)
 	r.Post("/{id}/retry", h.retry)
+	r.Get("/{id}/logs/stream", h.streamLogs)
 	r.Get("/{id}/logs", h.logs)
 	return r
 }
@@ -172,6 +178,150 @@ func (h Handler) logs(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	if _, err := w.Write([]byte(logs)); err != nil {
 		slog.Default().Warn("write build task logs", "error", err)
+	}
+}
+
+func (h Handler) streamLogs(w http.ResponseWriter, r *http.Request) {
+	task, logPath, filename, err := h.service.LogFile(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		handleTaskError(w, err)
+		return
+	}
+	if _, err := os.Stat(logPath); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			handleTaskError(w, ErrLogsNotFound)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to open build task logs.", nil)
+		return
+	}
+	if _, ok := w.(http.Flusher); !ok {
+		writeError(w, http.StatusInternalServerError, "STREAM_UNSUPPORTED", "Streaming is not supported by this response writer.", nil)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache, no-transform")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("Content-Disposition", `inline; filename="`+filename+`"`)
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+
+	offset := int64(0)
+	lastHeartbeat := time.Now()
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		nextOffset, err := writeLogStreamChunk(w, logPath, offset)
+		if err != nil {
+			slog.Default().Warn("stream build task logs", "task_id", task.ID, "error", err)
+			_ = writeSSEEvent(w, "error", "Failed to read build task logs.")
+			return
+		}
+		offset = nextOffset
+
+		current, err := h.service.Get(r.Context(), task.ID)
+		if err != nil {
+			if r.Context().Err() != nil {
+				return
+			}
+			slog.Default().Warn("load build task during log stream", "task_id", task.ID, "error", err)
+			_ = writeSSEEvent(w, "error", "Failed to read build task state.")
+			return
+		}
+		if terminalStatus(current.Status) {
+			nextOffset, err = writeLogStreamChunk(w, logPath, offset)
+			if err != nil {
+				slog.Default().Warn("stream final build task logs", "task_id", task.ID, "error", err)
+				_ = writeSSEEvent(w, "error", "Failed to read final build task logs.")
+				return
+			}
+			offset = nextOffset
+			_ = writeSSEEvent(w, "done", current.Status)
+			return
+		}
+		if time.Since(lastHeartbeat) >= 15*time.Second {
+			if err := writeSSEComment(w, "keepalive"); err != nil {
+				return
+			}
+			lastHeartbeat = time.Now()
+		}
+
+		select {
+		case <-r.Context().Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func writeLogStreamChunk(w http.ResponseWriter, logPath string, offset int64) (int64, error) {
+	file, err := os.Open(logPath)
+	if err != nil {
+		return offset, err
+	}
+	defer file.Close()
+
+	info, err := file.Stat()
+	if err != nil {
+		return offset, err
+	}
+	if info.Size() < offset {
+		offset = 0
+	}
+	if _, err := file.Seek(offset, io.SeekStart); err != nil {
+		return offset, err
+	}
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return offset, err
+	}
+	if len(data) == 0 {
+		return offset, nil
+	}
+	if err := writeSSEEvent(w, "log", string(data)); err != nil {
+		return offset, err
+	}
+	return offset + int64(len(data)), nil
+}
+
+func writeSSEEvent(w http.ResponseWriter, event string, data string) error {
+	if event != "" {
+		if _, err := fmt.Fprintf(w, "event: %s\n", event); err != nil {
+			return err
+		}
+	}
+	lines := strings.Split(strings.ReplaceAll(data, "\r\n", "\n"), "\n")
+	if len(lines) > 1 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	if len(lines) == 0 {
+		lines = []string{""}
+	}
+	for _, line := range lines {
+		if _, err := fmt.Fprintf(w, "data: %s\n", line); err != nil {
+			return err
+		}
+	}
+	if _, err := fmt.Fprint(w, "\n"); err != nil {
+		return err
+	}
+	flushSSE(w)
+	return nil
+}
+
+func writeSSEComment(w http.ResponseWriter, comment string) error {
+	if _, err := fmt.Fprintf(w, ": %s\n\n", comment); err != nil {
+		return err
+	}
+	flushSSE(w)
+	return nil
+}
+
+func flushSSE(w http.ResponseWriter) {
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
 	}
 }
 

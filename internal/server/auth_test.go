@@ -411,6 +411,17 @@ func TestBuildTasksQueueDispatchCancelAndRetry(t *testing.T) {
 			t.Fatalf("expected fake build log, got %q", body)
 		}
 	})
+	getText(t, router, http.MethodGet, "/api/v1/build-tasks/"+retryTaskID+"/logs/stream", sessionCookie, http.StatusOK, func(body string) {
+		if !strings.Contains(body, "event: log") {
+			t.Fatalf("expected SSE log event, got %q", body)
+		}
+		if !strings.Contains(body, "fake local build completed") {
+			t.Fatalf("expected fake build log in stream, got %q", body)
+		}
+		if !strings.Contains(body, "event: done") || !strings.Contains(body, "data: build_success") {
+			t.Fatalf("expected SSE done event, got %q", body)
+		}
+	})
 }
 
 func newAuthTestRouter(t *testing.T) http.Handler {

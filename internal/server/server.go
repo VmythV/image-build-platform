@@ -111,7 +111,7 @@ func New(opts Options) (http.Handler, error) {
 	r.Use(middleware.RealIP)
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.CleanPath)
-	r.Use(middleware.Timeout(60 * time.Second))
+	r.Use(timeoutExceptLogStreams(60 * time.Second))
 
 	r.Get("/healthz", healthHandler(opts.Version, opts.DB))
 
@@ -157,6 +157,20 @@ func New(opts Options) (http.Handler, error) {
 	}
 
 	return r, nil
+}
+
+func timeoutExceptLogStreams(timeout time.Duration) func(http.Handler) http.Handler {
+	timeoutMiddleware := middleware.Timeout(timeout)
+	return func(next http.Handler) http.Handler {
+		timeoutHandler := timeoutMiddleware(next)
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasSuffix(r.URL.Path, "/logs/stream") {
+				next.ServeHTTP(w, r)
+				return
+			}
+			timeoutHandler.ServeHTTP(w, r)
+		})
+	}
 }
 
 func healthHandler(version string, db *sql.DB) http.HandlerFunc {
