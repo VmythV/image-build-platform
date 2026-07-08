@@ -10,10 +10,11 @@ import { DashboardPage } from "@/pages/dashboard/dashboard-page"
 import { HelpPage } from "@/pages/help/help-page"
 import { ImageProjectsPage } from "@/pages/image-projects/image-projects-page"
 import { RegistriesPage } from "@/pages/registries/registries-page"
+import { SettingsPage } from "@/pages/settings/settings-page"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { type ReactNode, useState } from "react"
 
-export type AppView = "dashboard" | "build-hosts" | "registries" | "image-projects" | "build-tasks" | "artifacts" | "help"
+export type AppView = "dashboard" | "build-hosts" | "registries" | "image-projects" | "build-tasks" | "artifacts" | "settings" | "help"
 
 export function App() {
   const queryClient = useQueryClient()
@@ -84,6 +85,7 @@ export function App() {
       {activeView === "image-projects" ? <ImageProjectsPage /> : null}
       {activeView === "build-tasks" ? <BuildTasksPage /> : null}
       {activeView === "artifacts" ? <ArtifactsPage /> : null}
+      {activeView === "settings" ? <SettingsPage /> : null}
       {activeView === "help" ? <HelpPage /> : null}
     </AppShell>
   )

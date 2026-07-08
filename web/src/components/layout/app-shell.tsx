@@ -8,6 +8,7 @@ import {
   ListChecks,
   LogOut,
   Settings,
+  type LucideIcon,
   UserCircle,
   Warehouse,
 } from "lucide-react"
@@ -18,14 +19,14 @@ import { Button } from "@/components/ui/button"
 import { type User } from "@/lib/auth-api"
 import { cn } from "@/lib/utils"
 
-const navigation = [
+const navigation: Array<{ id: AppView; label: string; icon: LucideIcon; disabled?: boolean }> = [
   { id: "dashboard", label: "Dashboard", icon: Home },
   { id: "build-hosts", label: "Build Hosts", icon: HardDrive },
   { id: "registries", label: "Registries", icon: Warehouse },
   { id: "image-projects", label: "Image Projects", icon: GitBranch },
   { id: "build-tasks", label: "Build Tasks", icon: ListChecks },
   { id: "artifacts", label: "Artifacts", icon: Image },
-  { id: "settings", label: "Settings", icon: Settings, disabled: true },
+  { id: "settings", label: "Settings", icon: Settings },
   { id: "help", label: "Help", icon: HelpCircle },
 ]
 
@@ -44,6 +45,7 @@ const viewTitles: Record<AppView, { title: string; subtitle: string }> = {
   "image-projects": { title: "Image Projects", subtitle: "Root images, versions, and branches" },
   "build-tasks": { title: "Build Tasks", subtitle: "Queue, scheduling, cancel, and retry" },
   artifacts: { title: "Artifacts", subtitle: "Pushed image records and pull commands" },
+  settings: { title: "Settings", subtitle: "System defaults and audit logs" },
   help: { title: "Help", subtitle: "Operations guide and failure troubleshooting" },
 }
 

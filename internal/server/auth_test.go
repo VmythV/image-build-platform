@@ -81,6 +81,42 @@ func TestDashboardSummaryRequiresAuth(t *testing.T) {
 	})
 }
 
+func TestSettingsAndAuditLogsRequireAuth(t *testing.T) {
+	router := newAuthTestRouter(t)
+
+	getJSON(t, router, http.MethodGet, "/api/v1/settings", "", nil, http.StatusUnauthorized, nil)
+	getJSON(t, router, http.MethodGet, "/api/v1/audit-logs", "", nil, http.StatusUnauthorized, nil)
+
+	sessionCookie := initializeAdminAndLogin(t, router)
+	getJSON(t, router, http.MethodGet, "/api/v1/settings", "", sessionCookie, http.StatusOK, func(body map[string]any) {
+		data := body["data"].([]any)
+		if len(data) == 0 {
+			t.Fatalf("expected default settings")
+		}
+	})
+
+	getJSON(t, router, http.MethodPut, "/api/v1/settings/build.timeout_minutes", `{"value":"90"}`, sessionCookie, http.StatusOK, func(body map[string]any) {
+		data := body["data"].(map[string]any)
+		if data["value"] != "90" {
+			t.Fatalf("expected updated setting value 90, got %v", data["value"])
+		}
+	})
+
+	getJSON(t, router, http.MethodGet, "/api/v1/audit-logs", "", sessionCookie, http.StatusOK, func(body map[string]any) {
+		data := body["data"].([]any)
+		if len(data) == 0 {
+			t.Fatalf("expected audit log after setting update")
+		}
+		log := data[0].(map[string]any)
+		if log["action"] != "update_settings" {
+			t.Fatalf("expected update_settings audit action, got %v", log["action"])
+		}
+		if log["resourceId"] != "build.timeout_minutes" {
+			t.Fatalf("expected setting key resource id, got %v", log["resourceId"])
+		}
+	})
+}
+
 func TestBuildHostsRequireAuthAndCRUD(t *testing.T) {
 	router := newAuthTestRouter(t)
 

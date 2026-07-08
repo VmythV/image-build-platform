@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/VmythV/image-build-platform/internal/audit"
 	"github.com/VmythV/image-build-platform/internal/auth"
 	"github.com/VmythV/image-build-platform/internal/buildhost"
 	"github.com/VmythV/image-build-platform/internal/buildtask"
@@ -23,6 +24,7 @@ import (
 	"github.com/VmythV/image-build-platform/internal/imageartifact"
 	"github.com/VmythV/image-build-platform/internal/imageproject"
 	"github.com/VmythV/image-build-platform/internal/registry"
+	"github.com/VmythV/image-build-platform/internal/settings"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 )
@@ -56,6 +58,9 @@ func New(opts Options) (http.Handler, error) {
 	var buildTaskRoutes http.Handler
 	var artifactRoutes http.Handler
 	var dashboardRoutes http.Handler
+	var settingsRoutes http.Handler
+	var auditRoutes http.Handler
+	var auditRepo audit.Repository
 	if opts.DB != nil {
 		service, err := auth.NewService(auth.ServiceOptions{
 			Repository: auth.NewRepository(opts.DB, opts.DriverName),
@@ -79,6 +84,13 @@ func New(opts Options) (http.Handler, error) {
 			return nil, fmt.Errorf("ensure default local build host: %w", err)
 		}
 		buildHostRoutes = buildhost.NewHandler(buildHostService).Routes()
+		settingsRepo := settings.NewRepository(opts.DB, opts.DriverName)
+		if err := settingsRepo.EnsureDefaults(context.Background(), time.Now()); err != nil {
+			return nil, fmt.Errorf("ensure default settings: %w", err)
+		}
+		settingsRoutes = settings.NewHandler(settingsRepo).Routes()
+		auditRepo = audit.NewRepository(opts.DB, opts.DriverName)
+		auditRoutes = audit.NewHandler(auditRepo).Routes()
 
 		credentialEncryptor, err := credential.NewEncryptor(opts.SecretKey)
 		if err != nil {
@@ -132,6 +144,7 @@ func New(opts Options) (http.Handler, error) {
 		if buildHostRoutes != nil {
 			r.Group(func(r chi.Router) {
 				r.Use(auth.Middleware(authHandler))
+				r.Use(audit.Middleware(auditRepo, logger))
 				r.Mount("/build-hosts", buildHostRoutes)
 			})
 		}
@@ -144,24 +157,28 @@ func New(opts Options) (http.Handler, error) {
 		if registryRoutes != nil {
 			r.Group(func(r chi.Router) {
 				r.Use(auth.Middleware(authHandler))
+				r.Use(audit.Middleware(auditRepo, logger))
 				r.Mount("/registries", registryRoutes)
 			})
 		}
 		if imageProjectRoutes != nil {
 			r.Group(func(r chi.Router) {
 				r.Use(auth.Middleware(authHandler))
+				r.Use(audit.Middleware(auditRepo, logger))
 				r.Mount("/image-projects", imageProjectRoutes)
 			})
 		}
 		if dockerfileRoutes != nil {
 			r.Group(func(r chi.Router) {
 				r.Use(auth.Middleware(authHandler))
+				r.Use(audit.Middleware(auditRepo, logger))
 				r.Mount("/dockerfile", dockerfileRoutes)
 			})
 		}
 		if buildTaskRoutes != nil {
 			r.Group(func(r chi.Router) {
 				r.Use(auth.Middleware(authHandler))
+				r.Use(audit.Middleware(auditRepo, logger))
 				r.Mount("/build-tasks", buildTaskRoutes)
 			})
 		}
@@ -169,6 +186,19 @@ func New(opts Options) (http.Handler, error) {
 			r.Group(func(r chi.Router) {
 				r.Use(auth.Middleware(authHandler))
 				r.Mount("/artifacts", artifactRoutes)
+			})
+		}
+		if settingsRoutes != nil {
+			r.Group(func(r chi.Router) {
+				r.Use(auth.Middleware(authHandler))
+				r.Use(audit.Middleware(auditRepo, logger))
+				r.Mount("/settings", settingsRoutes)
+			})
+		}
+		if auditRoutes != nil {
+			r.Group(func(r chi.Router) {
+				r.Use(auth.Middleware(authHandler))
+				r.Mount("/audit-logs", auditRoutes)
 			})
 		}
 	})
