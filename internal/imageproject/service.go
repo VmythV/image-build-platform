@@ -265,6 +265,24 @@ func (s Service) UpdateNode(ctx context.Context, projectID string, nodeID string
 	return s.repo.FindNode(ctx, projectID, nodeID)
 }
 
+func (s Service) DiffNodes(ctx context.Context, projectID string, leftNodeID string, rightNodeID string) (DockerfileDiff, error) {
+	left, err := s.repo.FindNode(ctx, projectID, leftNodeID)
+	if err != nil {
+		return DockerfileDiff{}, err
+	}
+	right, err := s.repo.FindNode(ctx, projectID, rightNodeID)
+	if err != nil {
+		return DockerfileDiff{}, err
+	}
+	return DockerfileDiff{
+		LeftNodeID:      left.ID,
+		RightNodeID:     right.ID,
+		LeftDockerfile:  left.Dockerfile,
+		RightDockerfile: right.Dockerfile,
+		UnifiedDiff:     unifiedDiff(left.Version, left.Dockerfile, right.Version, right.Dockerfile),
+	}, nil
+}
+
 func normalizeProjectInput(input ProjectInput) (Project, error) {
 	project := Project{
 		Name:                strings.TrimSpace(input.Name),
@@ -381,4 +399,43 @@ func normalizeLabels(labels []string) []string {
 
 func validationError(message string) error {
 	return fmt.Errorf("%w: %s", ErrValidation, message)
+}
+
+func unifiedDiff(leftName string, leftValue string, rightName string, rightValue string) string {
+	leftLines := splitLines(leftValue)
+	rightLines := splitLines(rightValue)
+	maxLength := len(leftLines)
+	if len(rightLines) > maxLength {
+		maxLength = len(rightLines)
+	}
+
+	lines := []string{"--- " + leftName, "+++ " + rightName, "@@ @@"}
+	for i := 0; i < maxLength; i++ {
+		var leftLine, rightLine string
+		if i < len(leftLines) {
+			leftLine = leftLines[i]
+		}
+		if i < len(rightLines) {
+			rightLine = rightLines[i]
+		}
+		switch {
+		case i >= len(leftLines):
+			lines = append(lines, "+"+rightLine)
+		case i >= len(rightLines):
+			lines = append(lines, "-"+leftLine)
+		case leftLine == rightLine:
+			lines = append(lines, " "+leftLine)
+		default:
+			lines = append(lines, "-"+leftLine, "+"+rightLine)
+		}
+	}
+	return strings.Join(lines, "\n") + "\n"
+}
+
+func splitLines(value string) []string {
+	value = strings.TrimRight(value, "\n")
+	if value == "" {
+		return []string{}
+	}
+	return strings.Split(value, "\n")
 }

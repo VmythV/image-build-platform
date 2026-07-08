@@ -31,6 +31,7 @@ func (h Handler) Routes() http.Handler {
 	r.Post("/{projectID}/branches", h.createBranch)
 	r.Post("/{projectID}/branches/{branchID}/archive", h.archiveBranch)
 	r.Post("/{projectID}/version-nodes", h.createNode)
+	r.Get("/{projectID}/version-nodes/{leftNodeID}/diff/{rightNodeID}", h.diffNodes)
 	r.Get("/{projectID}/version-nodes/{nodeID}", h.getNode)
 	r.Put("/{projectID}/version-nodes/{nodeID}", h.updateNode)
 	return r
@@ -197,6 +198,15 @@ func (h Handler) getNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeData(w, http.StatusOK, ToVersionNodeDTO(node))
+}
+
+func (h Handler) diffNodes(w http.ResponseWriter, r *http.Request) {
+	diff, err := h.service.DiffNodes(r.Context(), chi.URLParam(r, "projectID"), chi.URLParam(r, "leftNodeID"), chi.URLParam(r, "rightNodeID"))
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	writeData(w, http.StatusOK, diff)
 }
 
 func (h Handler) updateNode(w http.ResponseWriter, r *http.Request) {

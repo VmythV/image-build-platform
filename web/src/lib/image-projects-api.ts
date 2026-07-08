@@ -72,6 +72,14 @@ export type VersionGraph = {
   }>
 }
 
+export type DockerfileDiff = {
+  leftNodeId: string
+  rightNodeId: string
+  leftDockerfile: string
+  rightDockerfile: string
+  unifiedDiff: string
+}
+
 export type ProjectInput = {
   name: string
   imageType: ImageType
@@ -140,4 +148,15 @@ export async function createVersionNode(projectId: string, input: VersionNodeInp
     method: "POST",
     json: input,
   })
+}
+
+export async function updateVersionNode(projectId: string, nodeId: string, input: VersionNodeInput): Promise<VersionNode> {
+  return apiFetch<VersionNode>(`/api/v1/image-projects/${projectId}/version-nodes/${nodeId}`, {
+    method: "PUT",
+    json: input,
+  })
+}
+
+export async function diffVersionNodes(projectId: string, leftNodeId: string, rightNodeId: string): Promise<DockerfileDiff> {
+  return apiFetch<DockerfileDiff>(`/api/v1/image-projects/${projectId}/version-nodes/${leftNodeId}/diff/${rightNodeId}`)
 }

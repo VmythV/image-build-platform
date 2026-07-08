@@ -197,6 +197,14 @@ type GraphEdge struct {
 	TargetLabel string `json:"targetLabel,omitempty"`
 }
 
+type DockerfileDiff struct {
+	LeftNodeID      string `json:"leftNodeId"`
+	RightNodeID     string `json:"rightNodeId"`
+	LeftDockerfile  string `json:"leftDockerfile"`
+	RightDockerfile string `json:"rightDockerfile"`
+	UnifiedDiff     string `json:"unifiedDiff"`
+}
+
 func ToProjectDTO(project Project) ProjectDTO {
 	return ProjectDTO{
 		ID:                  project.ID,

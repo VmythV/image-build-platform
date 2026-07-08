@@ -207,9 +207,11 @@ func TestImageProjectsBranchesAndVersionNodes(t *testing.T) {
 		}
 	})
 
+	var childNodeID string
 	postJSON(t, router, "/api/v1/image-projects/"+projectID+"/version-nodes", `{"branchId":"`+branchID+`","parentNodeId":"`+rootNodeID+`","version":"jdk21-v1","dockerfile":"FROM eclipse-temurin:21\nRUN java -version\n","description":"Java 21 runtime.","status":"active"}`, sessionCookie, http.StatusCreated, func(rec *httptest.ResponseRecorder) {
 		body := decodeJSONBody(t, rec)
 		data := body["data"].(map[string]any)
+		childNodeID = data["id"].(string)
 		if data["parentNodeId"] != rootNodeID {
 			t.Fatalf("expected parent root, got %v", data["parentNodeId"])
 		}
@@ -231,11 +233,50 @@ func TestImageProjectsBranchesAndVersionNodes(t *testing.T) {
 		}
 	})
 
+	getJSON(t, router, http.MethodGet, "/api/v1/image-projects/"+projectID+"/version-nodes/"+rootNodeID+"/diff/"+childNodeID, "", sessionCookie, http.StatusOK, func(body map[string]any) {
+		data := body["data"].(map[string]any)
+		diff := data["unifiedDiff"].(string)
+		if !strings.Contains(diff, "+RUN java -version") {
+			t.Fatalf("expected Dockerfile diff to include added java command, got %q", diff)
+		}
+	})
+
 	postJSON(t, router, "/api/v1/image-projects/"+projectID+"/branches/"+mainBranchID+"/archive", "", sessionCookie, http.StatusOK, func(rec *httptest.ResponseRecorder) {
 		body := decodeJSONBody(t, rec)
 		data := body["data"].(map[string]any)
 		if data["status"] != "archived" {
 			t.Fatalf("expected branch archived, got %v", data["status"])
+		}
+	})
+}
+
+func TestDockerfileGenerateAndValidateRequireAuth(t *testing.T) {
+	router := newAuthTestRouter(t)
+
+	postJSON(t, router, "/api/v1/dockerfile/validate", `{"dockerfile":"FROM ubuntu:24.04\n"}`, nil, http.StatusUnauthorized, nil)
+
+	sessionCookie := initializeAdminAndLogin(t, router)
+	postJSON(t, router, "/api/v1/dockerfile/validate", `{"dockerfile":"RUN echo hi\n"}`, sessionCookie, http.StatusOK, func(rec *httptest.ResponseRecorder) {
+		body := decodeJSONBody(t, rec)
+		data := body["data"].(map[string]any)
+		if data["valid"] != false {
+			t.Fatalf("expected invalid Dockerfile, got %v", data["valid"])
+		}
+		errors := data["errors"].([]any)
+		if len(errors) == 0 {
+			t.Fatalf("expected validation errors")
+		}
+	})
+
+	postJSON(t, router, "/api/v1/dockerfile/generate", `{"baseImage":"ubuntu:24.04","packages":["curl","ca-certificates"],"workdir":"/app","expose":[8080],"cmd":["./server"],"environment":{"APP_ENV":"test"},"copy":[],"entrypoint":[],"args":{},"labels":{}}`, sessionCookie, http.StatusOK, func(rec *httptest.ResponseRecorder) {
+		body := decodeJSONBody(t, rec)
+		data := body["data"].(map[string]any)
+		dockerfile := data["dockerfile"].(string)
+		if !strings.Contains(dockerfile, "FROM ubuntu:24.04") {
+			t.Fatalf("expected generated Dockerfile FROM, got %q", dockerfile)
+		}
+		if !strings.Contains(dockerfile, "RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates") {
+			t.Fatalf("expected generated Dockerfile package install, got %q", dockerfile)
 		}
 	})
 }

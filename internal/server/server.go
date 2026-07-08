@@ -17,6 +17,7 @@ import (
 	"github.com/VmythV/image-build-platform/internal/auth"
 	"github.com/VmythV/image-build-platform/internal/buildhost"
 	"github.com/VmythV/image-build-platform/internal/credential"
+	"github.com/VmythV/image-build-platform/internal/dockerfile"
 	"github.com/VmythV/image-build-platform/internal/imageproject"
 	"github.com/VmythV/image-build-platform/internal/registry"
 	"github.com/go-chi/chi/v5"
@@ -45,6 +46,7 @@ func New(opts Options) (http.Handler, error) {
 	var buildHostRoutes http.Handler
 	var registryRoutes http.Handler
 	var imageProjectRoutes http.Handler
+	var dockerfileRoutes http.Handler
 	if opts.DB != nil {
 		service, err := auth.NewService(auth.ServiceOptions{
 			Repository: auth.NewRepository(opts.DB, opts.DriverName),
@@ -85,6 +87,7 @@ func New(opts Options) (http.Handler, error) {
 			imageproject.NewRepository(opts.DB, opts.DriverName),
 		)
 		imageProjectRoutes = imageproject.NewHandler(imageProjectService).Routes()
+		dockerfileRoutes = dockerfile.NewHandler(dockerfile.NewService()).Routes()
 	}
 
 	r := chi.NewRouter()
@@ -117,6 +120,12 @@ func New(opts Options) (http.Handler, error) {
 			r.Group(func(r chi.Router) {
 				r.Use(auth.Middleware(authHandler))
 				r.Mount("/image-projects", imageProjectRoutes)
+			})
+		}
+		if dockerfileRoutes != nil {
+			r.Group(func(r chi.Router) {
+				r.Use(auth.Middleware(authHandler))
+				r.Mount("/dockerfile", dockerfileRoutes)
 			})
 		}
 	})
