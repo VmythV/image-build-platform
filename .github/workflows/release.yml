@@ -21,6 +21,7 @@ concurrency:
 
 env:
   VERSION: ${{ github.ref_type == 'tag' && github.ref_name || inputs.version }}
+  NPM_CONFIG_REGISTRY: https://registry.npmjs.org/
 
 jobs:
   binary-release:

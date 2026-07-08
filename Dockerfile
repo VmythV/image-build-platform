@@ -2,6 +2,7 @@ FROM --platform=$BUILDPLATFORM node:22-alpine AS web-builder
 
 WORKDIR /src/web
 COPY web/package*.json ./
+COPY web/.npmrc ./
 RUN npm ci
 COPY web/ ./
 RUN npm run build
