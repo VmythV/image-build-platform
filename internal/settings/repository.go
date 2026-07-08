@@ -25,12 +25,24 @@ func NewRepository(db *sql.DB, driverName string) Repository {
 }
 
 func (r Repository) EnsureDefaults(ctx context.Context, now time.Time) error {
+	return r.EnsureDefaultsWithValues(ctx, now, nil)
+}
+
+func (r Repository) EnsureDefaultsWithValues(ctx context.Context, now time.Time, values map[string]string) error {
 	for _, definition := range Defaults() {
+		value := definition.Value
+		if override, ok := values[definition.Key]; ok {
+			normalized, err := normalizeValue(override, definition.ValueType)
+			if err != nil {
+				return fmt.Errorf("normalize default setting %s: %w", definition.Key, err)
+			}
+			value = normalized
+		}
 		query := `
 INSERT INTO system_settings (key, value, value_type, description, updated_by, updated_at)
 VALUES (` + placeholders(r.driverName, 6) + `)
 ON CONFLICT (key) DO NOTHING`
-		if _, err := r.db.ExecContext(ctx, query, definition.Key, definition.Value, definition.ValueType, definition.Description, nil, formatTime(now)); err != nil {
+		if _, err := r.db.ExecContext(ctx, query, definition.Key, value, definition.ValueType, definition.Description, nil, formatTime(now)); err != nil {
 			return fmt.Errorf("ensure default setting %s: %w", definition.Key, err)
 		}
 	}

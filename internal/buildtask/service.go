@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/VmythV/image-build-platform/internal/platform/clock"
 	"github.com/VmythV/image-build-platform/internal/platform/id"
 	"github.com/VmythV/image-build-platform/internal/registry"
+	systemsettings "github.com/VmythV/image-build-platform/internal/settings"
 )
 
 var (
@@ -27,16 +29,19 @@ var (
 )
 
 type Service struct {
-	repo       Repository
-	projects   imageproject.Repository
-	registries registry.Repository
-	secrets    RegistrySecretProvider
-	artifacts  ArtifactRecorder
-	hosts      buildhost.Repository
-	executor   Executor
-	contextDir string
-	logDir     string
-	logger     *slog.Logger
+	repo                 Repository
+	projects             imageproject.Repository
+	registries           registry.Repository
+	secrets              RegistrySecretProvider
+	artifacts            ArtifactRecorder
+	hosts                buildhost.Repository
+	settings             RuntimeSettings
+	executor             Executor
+	contextDir           string
+	logDir               string
+	buildTimeout         time.Duration
+	maxGlobalConcurrency int
+	logger               *slog.Logger
 }
 
 func NewService(repo Repository, projects imageproject.Repository, registries registry.Repository) Service {
@@ -50,16 +55,23 @@ func NewService(repo Repository, projects imageproject.Repository, registries re
 }
 
 type ServiceOptions struct {
-	Repository      Repository
-	Projects        imageproject.Repository
-	Registries      registry.Repository
-	RegistrySecrets RegistrySecretProvider
-	Artifacts       ArtifactRecorder
-	Hosts           buildhost.Repository
-	Executor        Executor
-	ContextDir      string
-	LogDir          string
-	Logger          *slog.Logger
+	Repository           Repository
+	Projects             imageproject.Repository
+	Registries           registry.Repository
+	RegistrySecrets      RegistrySecretProvider
+	Artifacts            ArtifactRecorder
+	Hosts                buildhost.Repository
+	Settings             RuntimeSettings
+	Executor             Executor
+	ContextDir           string
+	LogDir               string
+	DefaultBuildTimeout  time.Duration
+	MaxGlobalConcurrency int
+	Logger               *slog.Logger
+}
+
+type RuntimeSettings interface {
+	FindByKey(ctx context.Context, key string) (systemsettings.Setting, error)
 }
 
 type RegistrySecretProvider interface {
@@ -87,18 +99,29 @@ func NewServiceWithOptions(opts ServiceOptions) Service {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	buildTimeout := opts.DefaultBuildTimeout
+	if buildTimeout <= 0 {
+		buildTimeout = time.Hour
+	}
+	maxGlobalConcurrency := opts.MaxGlobalConcurrency
+	if maxGlobalConcurrency <= 0 {
+		maxGlobalConcurrency = 4
+	}
 
 	return Service{
-		repo:       opts.Repository,
-		projects:   opts.Projects,
-		registries: opts.Registries,
-		secrets:    opts.RegistrySecrets,
-		artifacts:  opts.Artifacts,
-		hosts:      opts.Hosts,
-		executor:   executor,
-		contextDir: contextDir,
-		logDir:     logDir,
-		logger:     logger,
+		repo:                 opts.Repository,
+		projects:             opts.Projects,
+		registries:           opts.Registries,
+		secrets:              opts.RegistrySecrets,
+		artifacts:            opts.Artifacts,
+		hosts:                opts.Hosts,
+		settings:             opts.Settings,
+		executor:             executor,
+		contextDir:           contextDir,
+		logDir:               logDir,
+		buildTimeout:         buildTimeout,
+		maxGlobalConcurrency: maxGlobalConcurrency,
+		logger:               logger,
 	}
 }
 
@@ -146,11 +169,11 @@ func (s Service) Create(ctx context.Context, input CreateInput, actorID string) 
 }
 
 func (s Service) Dispatch(ctx context.Context, taskID string) (BuildTask, bool, string, error) {
-	return s.repo.DispatchTask(ctx, taskID, clock.Now())
+	return s.repo.DispatchTaskWithOptions(ctx, taskID, clock.Now(), s.dispatchOptions(ctx))
 }
 
 func (s Service) DispatchNext(ctx context.Context) (BuildTask, bool, string, error) {
-	return s.repo.DispatchNext(ctx, clock.Now())
+	return s.repo.DispatchNextWithOptions(ctx, clock.Now(), s.dispatchOptions(ctx))
 }
 
 func (s Service) Cancel(ctx context.Context, taskID string) (BuildTask, error) {
@@ -202,9 +225,13 @@ func (s Service) Start(ctx context.Context, taskID string) (BuildTask, error) {
 		return BuildTask{}, err
 	}
 	if task.Status == StatusQueued || task.Status == StatusCreated {
-		task, _, _, err = s.repo.DispatchTask(ctx, task.ID, clock.Now())
+		var dispatched bool
+		task, dispatched, _, err = s.repo.DispatchTaskWithOptions(ctx, task.ID, clock.Now(), s.dispatchOptions(ctx))
 		if err != nil {
 			return BuildTask{}, err
+		}
+		if !dispatched {
+			return task, nil
 		}
 	}
 	if task.Status == StatusDispatchFailed {
@@ -277,24 +304,35 @@ func (s Service) LogFile(ctx context.Context, taskID string) (BuildTask, string,
 }
 
 func (s Service) runBuild(taskID string) {
-	ctx := context.Background()
-	task, err := s.repo.FindByID(ctx, taskID)
+	dbCtx := context.Background()
+	runCtx := dbCtx
+	cancel := func() {}
+	if timeout := s.effectiveBuildTimeout(dbCtx); timeout > 0 {
+		runCtx, cancel = context.WithTimeout(dbCtx, timeout)
+	}
+	defer cancel()
+
+	task, err := s.repo.FindByID(dbCtx, taskID)
 	if err != nil {
 		s.logger.Warn("load build task for execution", "task_id", taskID, "error", err)
 		return
 	}
-	host, err := s.hosts.FindByID(ctx, task.HostID)
+	host, err := s.hosts.FindByID(dbCtx, task.HostID)
 	if err != nil {
-		s.completeBuild(ctx, task.ID, fmt.Errorf("load build host: %w", err))
+		s.completeBuild(dbCtx, task.ID, fmt.Errorf("load build host: %w", err))
 		return
 	}
 	contextPath := filepath.Join(s.contextDir, task.ID)
-	err = s.executor.Build(ctx, task, host, contextPath, task.LogPath)
+	err = s.executor.Build(runCtx, task, host, contextPath, task.LogPath)
 	if err != nil {
-		s.completeBuild(ctx, task.ID, err)
+		if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
+			s.timeoutTask(dbCtx, task.ID)
+			return
+		}
+		s.completeBuild(dbCtx, task.ID, err)
 		return
 	}
-	s.pushBuild(ctx, task, host)
+	s.pushBuild(runCtx, dbCtx, task, host)
 }
 
 func (s Service) completeBuild(ctx context.Context, taskID string, buildErr error) {
@@ -310,48 +348,58 @@ func (s Service) completeBuild(ctx context.Context, taskID string, buildErr erro
 	}
 }
 
-func (s Service) pushBuild(ctx context.Context, task BuildTask, host buildhost.BuildHost) {
-	pushing, err := s.repo.StartPush(ctx, task.ID, clock.Now())
+func (s Service) pushBuild(execCtx context.Context, dbCtx context.Context, task BuildTask, host buildhost.BuildHost) {
+	pushing, err := s.repo.StartPush(dbCtx, task.ID, clock.Now())
 	if err != nil {
 		s.logger.Warn("start build task push", "task_id", task.ID, "error", err)
 		return
 	}
 
-	pushRegistry, err := s.registries.FindByID(ctx, pushing.RegistryID)
+	pushRegistry, err := s.registries.FindByID(dbCtx, pushing.RegistryID)
 	if err != nil {
-		s.completePush(ctx, pushing.ID, fmt.Errorf("load push registry: %w", err))
+		s.completePush(dbCtx, pushing.ID, fmt.Errorf("load push registry: %w", err))
 		return
 	}
 	if !pushRegistry.AllowPush {
-		s.completePush(ctx, pushing.ID, errors.New("registry does not allow push"))
+		s.completePush(dbCtx, pushing.ID, errors.New("registry does not allow push"))
 		return
 	}
 
 	var secret *registry.RegistrySecret
 	if s.secrets != nil {
-		secret, err = s.secrets.Secret(ctx, pushRegistry)
+		secret, err = s.secrets.Secret(dbCtx, pushRegistry)
 		if err != nil {
-			s.completePush(ctx, pushing.ID, fmt.Errorf("load push registry credential: %w", err))
+			s.completePush(dbCtx, pushing.ID, fmt.Errorf("load push registry credential: %w", err))
 			return
 		}
 	}
 
 	pushStartedAt := clock.Now()
-	result, err := s.executor.Push(ctx, pushing, host, pushRegistry, secret, pushing.LogPath)
+	result, err := s.executor.Push(execCtx, pushing, host, pushRegistry, secret, pushing.LogPath)
 	if err != nil {
-		s.completePush(ctx, pushing.ID, err)
+		if errors.Is(execCtx.Err(), context.DeadlineExceeded) {
+			s.timeoutTask(dbCtx, pushing.ID)
+			return
+		}
+		s.completePush(dbCtx, pushing.ID, err)
 		return
 	}
 
 	if s.artifacts != nil {
-		if err := s.recordPushedArtifact(ctx, pushing, result, pushStartedAt); err != nil {
-			s.completePush(ctx, pushing.ID, fmt.Errorf("record image artifact: %w", err))
+		if err := s.recordPushedArtifact(dbCtx, pushing, result, pushStartedAt); err != nil {
+			s.completePush(dbCtx, pushing.ID, fmt.Errorf("record image artifact: %w", err))
 			return
 		}
 	}
 
-	if _, err := s.repo.CompletePush(ctx, pushing.ID, true, "", "", clock.Now()); err != nil {
+	if _, err := s.repo.CompletePush(dbCtx, pushing.ID, true, "", "", clock.Now()); err != nil {
 		s.logger.Warn("mark build task push success", "task_id", pushing.ID, "error", err)
+	}
+}
+
+func (s Service) timeoutTask(ctx context.Context, taskID string) {
+	if _, err := s.repo.FailTask(ctx, taskID, StatusTimeout, "TASK_TIMEOUT", "Build task exceeded its timeout budget.", clock.Now()); err != nil {
+		s.logger.Warn("mark build task timed out", "task_id", taskID, "error", err)
 	}
 }
 
@@ -392,6 +440,52 @@ func (s Service) recordPushedArtifact(ctx context.Context, task BuildTask, resul
 		CreatedBy:   task.CreatedBy,
 		CreatedAt:   now,
 	})
+}
+
+func (s Service) dispatchOptions(ctx context.Context) DispatchOptions {
+	return DispatchOptions{
+		EnforceGlobalConcurrency: true,
+		MaxGlobalConcurrency:     s.effectiveGlobalConcurrency(ctx),
+	}
+}
+
+func (s Service) effectiveGlobalConcurrency(ctx context.Context) int {
+	value := s.settingInt(ctx, "scheduler.global_concurrency", s.maxGlobalConcurrency)
+	if value < 0 {
+		return s.maxGlobalConcurrency
+	}
+	return value
+}
+
+func (s Service) effectiveBuildTimeout(ctx context.Context) time.Duration {
+	defaultMinutes := int(s.buildTimeout / time.Minute)
+	if defaultMinutes <= 0 {
+		defaultMinutes = 60
+	}
+	minutes := s.settingInt(ctx, "build.timeout_minutes", defaultMinutes)
+	if minutes <= 0 {
+		return 0
+	}
+	return time.Duration(minutes) * time.Minute
+}
+
+func (s Service) settingInt(ctx context.Context, key string, fallback int) int {
+	if s.settings == nil {
+		return fallback
+	}
+	setting, err := s.settings.FindByKey(ctx, key)
+	if err != nil {
+		if !errors.Is(err, systemsettings.ErrNotFound) {
+			s.logger.Warn("load runtime setting", "key", key, "error", err)
+		}
+		return fallback
+	}
+	value, err := strconv.Atoi(strings.TrimSpace(setting.Value))
+	if err != nil {
+		s.logger.Warn("parse runtime setting", "key", key, "value", setting.Value, "error", err)
+		return fallback
+	}
+	return value
 }
 
 type normalizedCreateInput struct {

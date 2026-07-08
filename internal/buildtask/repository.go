@@ -36,6 +36,11 @@ type schedulerHost struct {
 	CurrentRunning int
 }
 
+type DispatchOptions struct {
+	EnforceGlobalConcurrency bool
+	MaxGlobalConcurrency     int
+}
+
 func NewRepository(db *sql.DB, driverName string) Repository {
 	return Repository{db: db, driverName: driverName}
 }
@@ -158,6 +163,10 @@ INSERT INTO build_tasks (
 }
 
 func (r Repository) DispatchTask(ctx context.Context, taskID string, now time.Time) (BuildTask, bool, string, error) {
+	return r.DispatchTaskWithOptions(ctx, taskID, now, DispatchOptions{})
+}
+
+func (r Repository) DispatchTaskWithOptions(ctx context.Context, taskID string, now time.Time, opts DispatchOptions) (BuildTask, bool, string, error) {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return BuildTask{}, false, "", fmt.Errorf("begin build task dispatch: %w", err)
@@ -174,6 +183,20 @@ func (r Repository) DispatchTask(ctx context.Context, taskID string, now time.Ti
 	}
 	if task.Status != StatusQueued && task.Status != StatusCreated {
 		return BuildTask{}, false, "", ErrInvalidState
+	}
+
+	if opts.EnforceGlobalConcurrency {
+		running, err := r.countRunning(ctx, tx)
+		if err != nil {
+			return BuildTask{}, false, "", err
+		}
+		if running >= opts.MaxGlobalConcurrency {
+			reason := fmt.Sprintf("Global build concurrency limit reached (%d).", opts.MaxGlobalConcurrency)
+			if err = tx.Commit(); err != nil {
+				return BuildTask{}, false, "", fmt.Errorf("commit global concurrency hold: %w", err)
+			}
+			return task, false, reason, nil
+		}
 	}
 
 	host, reason, err := r.selectHost(ctx, tx, task)
@@ -206,6 +229,10 @@ func (r Repository) DispatchTask(ctx context.Context, taskID string, now time.Ti
 }
 
 func (r Repository) DispatchNext(ctx context.Context, now time.Time) (BuildTask, bool, string, error) {
+	return r.DispatchNextWithOptions(ctx, now, DispatchOptions{})
+}
+
+func (r Repository) DispatchNextWithOptions(ctx context.Context, now time.Time, opts DispatchOptions) (BuildTask, bool, string, error) {
 	query := `
 SELECT id
 FROM build_tasks
@@ -220,7 +247,7 @@ LIMIT 1`
 		}
 		return BuildTask{}, false, "", fmt.Errorf("find next queued build task: %w", err)
 	}
-	return r.DispatchTask(ctx, taskID, now)
+	return r.DispatchTaskWithOptions(ctx, taskID, now, opts)
 }
 
 func (r Repository) Cancel(ctx context.Context, taskID string, now time.Time) (BuildTask, error) {
@@ -584,6 +611,23 @@ WHERE id = ` + placeholder(r.driverName, 2) + ` AND deleted_at IS NULL`
 		return fmt.Errorf("decrement build host running count: %w", err)
 	}
 	return requireRowsAffected(result)
+}
+
+func (r Repository) countRunning(ctx context.Context, exec sqlExecutor) (int, error) {
+	statuses := []any{
+		StatusDispatching,
+		StatusPreparingContext,
+		StatusBuilding,
+		StatusBuildSuccess,
+		StatusPushing,
+	}
+	query := "SELECT COUNT(*) FROM build_tasks WHERE status IN (" + placeholders(r.driverName, len(statuses)) + ")"
+
+	var count int
+	if err := exec.QueryRowContext(ctx, query, statuses...).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count running build tasks: %w", err)
+	}
+	return count, nil
 }
 
 func (r Repository) markDispatching(ctx context.Context, exec sqlExecutor, taskID string, hostID string, reason string, now time.Time) error {

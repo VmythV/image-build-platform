@@ -178,6 +178,16 @@ func validate(cfg Config) error {
 	if cfg.Build.MaxGlobalConcurrency < 1 {
 		return errors.New("build.max_global_concurrency must be at least 1")
 	}
+	if strings.TrimSpace(cfg.Build.DefaultTimeout) == "" {
+		return errors.New("build.default_timeout is required")
+	}
+	timeout, err := time.ParseDuration(cfg.Build.DefaultTimeout)
+	if err != nil {
+		return fmt.Errorf("build.default_timeout is invalid: %w", err)
+	}
+	if timeout <= 0 {
+		return errors.New("build.default_timeout must be positive")
+	}
 	if strings.TrimSpace(cfg.Security.SessionTTL) != "" {
 		ttl, err := time.ParseDuration(cfg.Security.SessionTTL)
 		if err != nil {

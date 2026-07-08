@@ -117,6 +117,54 @@ func TestSettingsAndAuditLogsRequireAuth(t *testing.T) {
 	})
 }
 
+func TestCSRFProtectsUnsafeRequests(t *testing.T) {
+	router := newAuthTestRouterWithCSRF(t, true)
+	sessionCookie := initializeAdminAndLogin(t, router)
+
+	getJSON(t, router, http.MethodPut, "/api/v1/settings/build.timeout_minutes", `{"value":"90"}`, sessionCookie, http.StatusForbidden, func(body map[string]any) {
+		errBody := body["error"].(map[string]any)
+		if errBody["code"] != "CSRF_FAILED" {
+			t.Fatalf("expected CSRF_FAILED, got %v", errBody["code"])
+		}
+	})
+
+	var csrfCookie *http.Cookie
+	var csrfToken string
+	getJSONRecorder(t, router, http.MethodGet, "/api/v1/csrf", "", sessionCookie, http.StatusOK, func(rec *httptest.ResponseRecorder) {
+		for _, cookie := range rec.Result().Cookies() {
+			if cookie.Name == csrfCookieName {
+				csrfCookie = cookie
+			}
+		}
+		body := decodeJSONBody(t, rec)
+		data := body["data"].(map[string]any)
+		csrfToken = data["token"].(string)
+	})
+	if csrfCookie == nil {
+		t.Fatalf("expected csrf cookie")
+	}
+	if csrfToken == "" {
+		t.Fatalf("expected csrf token")
+	}
+
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/settings/build.timeout_minutes", strings.NewReader(`{"value":"90"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(csrfHeaderName, csrfToken)
+	req.AddCookie(sessionCookie)
+	req.AddCookie(csrfCookie)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	body := decodeJSONBody(t, rec)
+	data := body["data"].(map[string]any)
+	if data["value"] != "90" {
+		t.Fatalf("expected updated setting value 90, got %v", data["value"])
+	}
+}
+
 func TestBuildHostsRequireAuthAndCRUD(t *testing.T) {
 	router := newAuthTestRouter(t)
 
@@ -347,6 +395,7 @@ func TestBuildTasksQueueDispatchCancelAndRetry(t *testing.T) {
 	getJSON(t, router, http.MethodGet, "/api/v1/build-tasks", "", nil, http.StatusUnauthorized, nil)
 
 	sessionCookie := initializeAdminAndLogin(t, router)
+	getJSON(t, router, http.MethodPut, "/api/v1/settings/scheduler.global_concurrency", `{"value":"1"}`, sessionCookie, http.StatusOK, nil)
 	postJSON(t, router, "/api/v1/registries", `{"name":"Push Registry","type":"generic","endpoint":"registry.example.com","namespace":"platform","allowPull":true,"allowPush":true,"isDefaultPull":false,"isDefaultPush":true,"tlsVerify":true,"insecureHttp":false}`, sessionCookie, http.StatusCreated, nil)
 
 	var projectID string
@@ -398,6 +447,31 @@ func TestBuildTasksQueueDispatchCancelAndRetry(t *testing.T) {
 			t.Fatalf("expected host running count 1, got %v", host["currentRunning"])
 		}
 	})
+
+	var blockedTaskID string
+	postJSON(t, router, "/api/v1/build-tasks", `{"projectId":"`+projectID+`","versionNodeId":"`+rootNodeID+`","architecture":"amd64","imageTag":"root-blocked"}`, sessionCookie, http.StatusCreated, func(rec *httptest.ResponseRecorder) {
+		body := decodeJSONBody(t, rec)
+		data := body["data"].(map[string]any)
+		blockedTaskID = data["id"].(string)
+	})
+	postJSON(t, router, "/api/v1/build-tasks/dispatch-next", "", sessionCookie, http.StatusOK, func(rec *httptest.ResponseRecorder) {
+		body := decodeJSONBody(t, rec)
+		data := body["data"].(map[string]any)
+		if data["dispatched"] != false {
+			t.Fatalf("expected global concurrency to block dispatch")
+		}
+		if !strings.Contains(data["reason"].(string), "Global build concurrency limit reached") {
+			t.Fatalf("expected global concurrency reason, got %v", data["reason"])
+		}
+		task := data["task"].(map[string]any)
+		if task["id"] != blockedTaskID {
+			t.Fatalf("expected blocked task %s, got %v", blockedTaskID, task["id"])
+		}
+		if task["status"] != "queued" {
+			t.Fatalf("expected blocked task to remain queued, got %v", task["status"])
+		}
+	})
+	postJSON(t, router, "/api/v1/build-tasks/"+blockedTaskID+"/cancel", "", sessionCookie, http.StatusOK, nil)
 
 	postJSON(t, router, "/api/v1/build-tasks/"+taskID+"/cancel", "", sessionCookie, http.StatusOK, func(rec *httptest.ResponseRecorder) {
 		body := decodeJSONBody(t, rec)
@@ -554,6 +628,11 @@ func TestBuildTasksCanRunOnSSHHost(t *testing.T) {
 
 func newAuthTestRouter(t *testing.T) http.Handler {
 	t.Helper()
+	return newAuthTestRouterWithCSRF(t, false)
+}
+
+func newAuthTestRouterWithCSRF(t *testing.T, csrfEnabled bool) http.Handler {
+	t.Helper()
 
 	tempDir := t.TempDir()
 	cfg := config.Default()
@@ -581,6 +660,7 @@ func newAuthTestRouter(t *testing.T) http.Handler {
 		DriverName:    store.DriverName,
 		SessionTTL:    cfg.Security.SessionTTL,
 		SecretKey:     cfg.Security.SecretKey,
+		CSRFEnabled:   csrfEnabled,
 		ContextDir:    cfg.Storage.ContextDir,
 		LogDir:        cfg.Storage.LogDir,
 		BuildExecutor: fakeBuildExecutor{},

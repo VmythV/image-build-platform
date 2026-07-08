@@ -41,6 +41,12 @@ func main() {
 		cfg.Server.StaticDir = *staticDir
 	}
 
+	defaultBuildTimeout, err := time.ParseDuration(cfg.Build.DefaultTimeout)
+	if err != nil {
+		logger.Error("parse build timeout", "error", err)
+		os.Exit(1)
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -56,16 +62,19 @@ func main() {
 	}()
 
 	handler, err := server.New(server.Options{
-		StaticDir:    cfg.Server.StaticDir,
-		Version:      version,
-		Logger:       logger,
-		DB:           store.DB,
-		DriverName:   store.DriverName,
-		SessionTTL:   cfg.Security.SessionTTL,
-		SecureCookie: cfg.Security.SecureCookie,
-		SecretKey:    cfg.Security.SecretKey,
-		ContextDir:   cfg.Storage.ContextDir,
-		LogDir:       cfg.Storage.LogDir,
+		StaticDir:            cfg.Server.StaticDir,
+		Version:              version,
+		Logger:               logger,
+		DB:                   store.DB,
+		DriverName:           store.DriverName,
+		SessionTTL:           cfg.Security.SessionTTL,
+		SecureCookie:         cfg.Security.SecureCookie,
+		CSRFEnabled:          cfg.Security.CSRFEnabled,
+		SecretKey:            cfg.Security.SecretKey,
+		ContextDir:           cfg.Storage.ContextDir,
+		LogDir:               cfg.Storage.LogDir,
+		DefaultBuildTimeout:  defaultBuildTimeout,
+		MaxGlobalConcurrency: cfg.Build.MaxGlobalConcurrency,
 	})
 	if err != nil {
 		logger.Error("initialize server", "error", err)

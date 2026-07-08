@@ -11,6 +11,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -30,17 +31,20 @@ import (
 )
 
 type Options struct {
-	StaticDir     string
-	Version       string
-	Logger        *slog.Logger
-	DB            *sql.DB
-	DriverName    string
-	SessionTTL    string
-	SecureCookie  bool
-	SecretKey     string
-	ContextDir    string
-	LogDir        string
-	BuildExecutor buildtask.Executor
+	StaticDir            string
+	Version              string
+	Logger               *slog.Logger
+	DB                   *sql.DB
+	DriverName           string
+	SessionTTL           string
+	SecureCookie         bool
+	CSRFEnabled          bool
+	SecretKey            string
+	ContextDir           string
+	LogDir               string
+	DefaultBuildTimeout  time.Duration
+	MaxGlobalConcurrency int
+	BuildExecutor        buildtask.Executor
 }
 
 func New(opts Options) (http.Handler, error) {
@@ -85,7 +89,7 @@ func New(opts Options) (http.Handler, error) {
 		}
 		buildHostRoutes = buildhost.NewHandler(buildHostService).Routes()
 		settingsRepo := settings.NewRepository(opts.DB, opts.DriverName)
-		if err := settingsRepo.EnsureDefaults(context.Background(), time.Now()); err != nil {
+		if err := settingsRepo.EnsureDefaultsWithValues(context.Background(), time.Now(), defaultSettingValues(opts)); err != nil {
 			return nil, fmt.Errorf("ensure default settings: %w", err)
 		}
 		settingsRoutes = settings.NewHandler(settingsRepo).Routes()
@@ -113,16 +117,19 @@ func New(opts Options) (http.Handler, error) {
 		imageProjectRoutes = imageproject.NewHandler(imageProjectService).Routes()
 		dockerfileRoutes = dockerfile.NewHandler(dockerfile.NewService()).Routes()
 		buildTaskService := buildtask.NewServiceWithOptions(buildtask.ServiceOptions{
-			Repository:      buildtask.NewRepository(opts.DB, opts.DriverName),
-			Projects:        imageproject.NewRepository(opts.DB, opts.DriverName),
-			Registries:      registry.NewRepository(opts.DB, opts.DriverName),
-			RegistrySecrets: registryService,
-			Artifacts:       artifactRepo,
-			Hosts:           buildhost.NewRepository(opts.DB, opts.DriverName),
-			ContextDir:      opts.ContextDir,
-			LogDir:          opts.LogDir,
-			Executor:        opts.BuildExecutor,
-			Logger:          logger,
+			Repository:           buildtask.NewRepository(opts.DB, opts.DriverName),
+			Projects:             imageproject.NewRepository(opts.DB, opts.DriverName),
+			Registries:           registry.NewRepository(opts.DB, opts.DriverName),
+			RegistrySecrets:      registryService,
+			Artifacts:            artifactRepo,
+			Hosts:                buildhost.NewRepository(opts.DB, opts.DriverName),
+			Settings:             settingsRepo,
+			ContextDir:           opts.ContextDir,
+			LogDir:               opts.LogDir,
+			DefaultBuildTimeout:  opts.DefaultBuildTimeout,
+			MaxGlobalConcurrency: opts.MaxGlobalConcurrency,
+			Executor:             opts.BuildExecutor,
+			Logger:               logger,
 		})
 		buildTaskRoutes = buildtask.NewHandler(buildTaskService).Routes()
 	}
@@ -137,6 +144,9 @@ func New(opts Options) (http.Handler, error) {
 	r.Get("/healthz", healthHandler(opts.Version, opts.DB))
 
 	r.Route("/api/v1", func(r chi.Router) {
+		csrf := csrfProtection{enabled: opts.CSRFEnabled, secureCookie: opts.SecureCookie}
+		r.Use(csrf.middleware)
+		r.Get("/csrf", csrf.handleToken)
 		r.Get("/status", statusHandler(opts.Version))
 		if authRoutes != nil {
 			r.Mount("/", authRoutes)
@@ -222,6 +232,31 @@ func timeoutExceptLogStreams(timeout time.Duration) func(http.Handler) http.Hand
 			timeoutHandler.ServeHTTP(w, r)
 		})
 	}
+}
+
+func defaultSettingValues(opts Options) map[string]string {
+	values := map[string]string{}
+	if opts.MaxGlobalConcurrency > 0 {
+		values["scheduler.global_concurrency"] = strconv.Itoa(opts.MaxGlobalConcurrency)
+	}
+	if minutes := durationMinutes(opts.DefaultBuildTimeout); minutes > 0 {
+		values["build.timeout_minutes"] = strconv.Itoa(minutes)
+	}
+	return values
+}
+
+func durationMinutes(value time.Duration) int {
+	if value <= 0 {
+		return 0
+	}
+	minutes := int(value / time.Minute)
+	if value%time.Minute != 0 {
+		minutes++
+	}
+	if minutes < 1 {
+		return 1
+	}
+	return minutes
 }
 
 func healthHandler(version string, db *sql.DB) http.HandlerFunc {
