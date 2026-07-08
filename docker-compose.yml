@@ -1,0 +1,23 @@
+services:
+  image-build-platform:
+    build:
+      context: .
+      args:
+        VERSION: dev
+    image: image-build-platform:dev
+    container_name: image-build-platform
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      IBP_PUBLIC_URL: "http://localhost:8080"
+      IBP_SECURITY_SECRET_KEY: "change-me-use-a-long-random-secret"
+      IBP_DATABASE_DRIVER: "sqlite"
+      IBP_DATABASE_DSN: "data/app.db"
+    volumes:
+      - ibp-data:/app/data
+      # Enable this only when local host Docker builds are required.
+      # - /var/run/docker.sock:/var/run/docker.sock
+
+volumes:
+  ibp-data:

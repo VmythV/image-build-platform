@@ -1,0 +1,32 @@
+server:
+  addr: "0.0.0.0:8080"
+  public_url: "http://localhost:8080"
+  allowed_origins: []
+
+database:
+  driver: "sqlite"
+  dsn: "data/app.db"
+
+security:
+  secret_key: "change-me-use-a-long-random-secret"
+  session_ttl: "24h"
+  secure_cookie: false
+  csrf_enabled: true
+
+storage:
+  data_dir: "data"
+  log_dir: "data/logs"
+  context_dir: "data/contexts"
+  tmp_dir: "data/tmp"
+  backup_dir: "data/backups"
+
+build:
+  default_timeout: "1h"
+  max_global_concurrency: 2
+  enable_buildkit: true
+
+logs:
+  retention_days: 30
+
+contexts:
+  retention_days: 7

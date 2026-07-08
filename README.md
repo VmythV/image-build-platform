@@ -80,6 +80,56 @@ It gives operators a management console for build hosts and registries, while gi
 7. Watch logs, success state, failure reason, and push status in the admin console.
 8. Find the final image in artifact management.
 
+## Development Quick Start
+
+Prerequisites:
+
+- Go 1.25 or newer.
+- Node.js 22 or newer.
+- npm 10 or newer.
+
+Install frontend dependencies:
+
+```bash
+make install
+```
+
+Run the backend and frontend dev servers:
+
+```bash
+make dev
+```
+
+Build everything:
+
+```bash
+make build
+```
+
+Run tests and type checks:
+
+```bash
+make test
+```
+
+Run the built backend with the built frontend assets:
+
+```bash
+./bin/ibp-server --addr 127.0.0.1:8080 --static-dir web/dist
+```
+
+Health check:
+
+```bash
+curl http://127.0.0.1:8080/healthz
+```
+
+Build the Docker image:
+
+```bash
+make docker-build VERSION=dev
+```
+
 ## Deployment Model
 
 ### Binary
@@ -124,4 +174,4 @@ Image Build Platform 是一个私有化镜像构建平台，目标是把构建�
 
 ## Repository Status
 
-This repository currently contains the product requirements and README. Implementation code will be added after the architecture and technology stack are finalized.
+This repository contains the product planning docs and the M1 project scaffold: Go backend, React/Vite frontend, shared build commands, Docker files, and CI.
