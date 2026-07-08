@@ -236,7 +236,7 @@ export function BuildHostsPage() {
             {form.connectionType === "ssh" ? (
               <div className="flex gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
                 <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-                <span>SSH detection currently uses keys or agent configuration available to the backend process.</span>
+                <span>SSH checks and remote builds use keys or agent configuration available to the backend process.</span>
               </div>
             ) : null}
 

@@ -424,6 +424,65 @@ func TestBuildTasksQueueDispatchCancelAndRetry(t *testing.T) {
 	})
 }
 
+func TestBuildTasksCanRunOnSSHHost(t *testing.T) {
+	router := newAuthTestRouter(t)
+	sessionCookie := initializeAdminAndLogin(t, router)
+
+	postJSON(t, router, "/api/v1/registries", `{"name":"Push Registry","type":"generic","endpoint":"registry.example.com","namespace":"platform","allowPull":true,"allowPush":true,"isDefaultPull":false,"isDefaultPush":true,"tlsVerify":true,"insecureHttp":false}`, sessionCookie, http.StatusCreated, nil)
+
+	var sshHostID string
+	postJSON(t, router, "/api/v1/build-hosts", `{"name":"SSH Builder","connectionType":"ssh","address":"192.0.2.10","port":22,"username":"builder","dockerCommand":"docker","maxConcurrency":1,"labels":["remote","amd64"]}`, sessionCookie, http.StatusCreated, func(rec *httptest.ResponseRecorder) {
+		body := decodeJSONBody(t, rec)
+		data := body["data"].(map[string]any)
+		sshHostID = data["id"].(string)
+		if data["connectionType"] != "ssh" {
+			t.Fatalf("expected ssh host, got %v", data["connectionType"])
+		}
+	})
+
+	var projectID string
+	postJSON(t, router, "/api/v1/image-projects", `{"name":"Python Runtime","imageType":"python","imageName":"python-runtime","namespace":"platform","rootImageRef":"python:3.12-slim","rootImageSource":"external_image","defaultArchitecture":"amd64","labels":["python"],"description":"Base Python runtime."}`, sessionCookie, http.StatusCreated, func(rec *httptest.ResponseRecorder) {
+		body := decodeJSONBody(t, rec)
+		data := body["data"].(map[string]any)
+		projectID = data["id"].(string)
+	})
+
+	var rootNodeID string
+	getJSON(t, router, http.MethodGet, "/api/v1/image-projects/"+projectID+"/graph", "", sessionCookie, http.StatusOK, func(body map[string]any) {
+		data := body["data"].(map[string]any)
+		nodes := data["nodes"].([]any)
+		rootNodeID = nodes[0].(map[string]any)["id"].(string)
+	})
+
+	var taskID string
+	postJSON(t, router, "/api/v1/build-tasks", `{"projectId":"`+projectID+`","versionNodeId":"`+rootNodeID+`","requestedHostId":"`+sshHostID+`","architecture":"amd64","imageTag":"ssh-root"}`, sessionCookie, http.StatusCreated, func(rec *httptest.ResponseRecorder) {
+		body := decodeJSONBody(t, rec)
+		data := body["data"].(map[string]any)
+		taskID = data["id"].(string)
+		if data["requestedHostId"] != sshHostID {
+			t.Fatalf("expected requestedHostId %s, got %v", sshHostID, data["requestedHostId"])
+		}
+	})
+
+	postJSON(t, router, "/api/v1/build-tasks/"+taskID+"/start", "", sessionCookie, http.StatusOK, func(rec *httptest.ResponseRecorder) {
+		body := decodeJSONBody(t, rec)
+		data := body["data"].(map[string]any)
+		if data["status"] != "building" {
+			t.Fatalf("expected building status after SSH start, got %v", data["status"])
+		}
+		if data["hostId"] != sshHostID {
+			t.Fatalf("expected SSH host id %s, got %v", sshHostID, data["hostId"])
+		}
+	})
+
+	waitForBuildTaskStatus(t, router, taskID, sessionCookie, "build_success")
+	getText(t, router, http.MethodGet, "/api/v1/build-tasks/"+taskID+"/logs", sessionCookie, http.StatusOK, func(body string) {
+		if !strings.Contains(body, "on SSH Builder") {
+			t.Fatalf("expected SSH host name in fake build log, got %q", body)
+		}
+	})
+}
+
 func newAuthTestRouter(t *testing.T) http.Handler {
 	t.Helper()
 

@@ -205,8 +205,8 @@ func (s Service) Start(ctx context.Context, taskID string) (BuildTask, error) {
 		}
 		return BuildTask{}, err
 	}
-	if host.ConnectionType != buildhost.ConnectionLocalDocker {
-		return s.repo.FailTask(ctx, task.ID, StatusDispatchFailed, "UNSUPPORTED_HOST", "M9 only supports local Docker build hosts.", clock.Now())
+	if host.ConnectionType != buildhost.ConnectionLocalDocker && host.ConnectionType != buildhost.ConnectionSSH {
+		return s.repo.FailTask(ctx, task.ID, StatusDispatchFailed, "UNSUPPORTED_HOST", "Only local Docker and SSH build hosts are supported.", clock.Now())
 	}
 
 	prepared, err := s.prepareBuildContext(task)
@@ -219,7 +219,7 @@ func (s Service) Start(ctx context.Context, taskID string) (BuildTask, error) {
 		return BuildTask{}, err
 	}
 
-	go s.runLocalBuild(started.ID)
+	go s.runBuild(started.ID)
 	return started, nil
 }
 
@@ -260,16 +260,16 @@ func (s Service) LogFile(ctx context.Context, taskID string) (BuildTask, string,
 	return task, logPath, filepath.Base(logPath), nil
 }
 
-func (s Service) runLocalBuild(taskID string) {
+func (s Service) runBuild(taskID string) {
 	ctx := context.Background()
 	task, err := s.repo.FindByID(ctx, taskID)
 	if err != nil {
-		s.logger.Warn("load build task for local execution", "task_id", taskID, "error", err)
+		s.logger.Warn("load build task for execution", "task_id", taskID, "error", err)
 		return
 	}
 	host, err := s.hosts.FindByID(ctx, task.HostID)
 	if err != nil {
-		s.completeBuild(ctx, task.ID, fmt.Errorf("load local build host: %w", err))
+		s.completeBuild(ctx, task.ID, fmt.Errorf("load build host: %w", err))
 		return
 	}
 	contextPath := filepath.Join(s.contextDir, task.ID)
