@@ -64,6 +64,8 @@ func main() {
 		SessionTTL:   cfg.Security.SessionTTL,
 		SecureCookie: cfg.Security.SecureCookie,
 		SecretKey:    cfg.Security.SecretKey,
+		ContextDir:   cfg.Storage.ContextDir,
+		LogDir:       cfg.Storage.LogDir,
 	})
 	if err != nil {
 		logger.Error("initialize server", "error", err)

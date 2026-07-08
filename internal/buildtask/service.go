@@ -4,9 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 
+	"github.com/VmythV/image-build-platform/internal/buildhost"
 	"github.com/VmythV/image-build-platform/internal/imageproject"
 	"github.com/VmythV/image-build-platform/internal/platform/clock"
 	"github.com/VmythV/image-build-platform/internal/platform/id"
@@ -17,16 +21,69 @@ var (
 	ErrValidation        = errors.New("build task validation failed")
 	ErrInvalidState      = errors.New("build task state transition is invalid")
 	ErrNoSchedulableHost = errors.New("no schedulable build host")
+	ErrLogsNotFound      = errors.New("build task logs not found")
 )
 
 type Service struct {
 	repo       Repository
 	projects   imageproject.Repository
 	registries registry.Repository
+	hosts      buildhost.Repository
+	executor   Executor
+	contextDir string
+	logDir     string
+	logger     *slog.Logger
 }
 
 func NewService(repo Repository, projects imageproject.Repository, registries registry.Repository) Service {
-	return Service{repo: repo, projects: projects, registries: registries}
+	return NewServiceWithOptions(ServiceOptions{
+		Repository: repo,
+		Projects:   projects,
+		Registries: registries,
+		ContextDir: "data/contexts",
+		LogDir:     "data/logs",
+	})
+}
+
+type ServiceOptions struct {
+	Repository Repository
+	Projects   imageproject.Repository
+	Registries registry.Repository
+	Hosts      buildhost.Repository
+	Executor   Executor
+	ContextDir string
+	LogDir     string
+	Logger     *slog.Logger
+}
+
+func NewServiceWithOptions(opts ServiceOptions) Service {
+	executor := opts.Executor
+	if executor == nil {
+		executor = NewLocalDockerExecutor()
+	}
+	contextDir := strings.TrimSpace(opts.ContextDir)
+	if contextDir == "" {
+		contextDir = "data/contexts"
+	}
+	logDir := strings.TrimSpace(opts.LogDir)
+	if logDir == "" {
+		logDir = "data/logs"
+	}
+	logger := opts.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+
+	return Service{
+		repo:       opts.Repository,
+		projects:   opts.Projects,
+		registries: opts.Registries,
+		hosts:      opts.Hosts,
+		executor:   executor,
+		contextDir: contextDir,
+		logDir:     logDir,
+		logger:     logger,
+	}
 }
 
 func (s Service) List(ctx context.Context, filter ListFilter) ([]BuildTask, int, error) {
@@ -81,6 +138,7 @@ func (s Service) DispatchNext(ctx context.Context) (BuildTask, bool, string, err
 }
 
 func (s Service) Cancel(ctx context.Context, taskID string) (BuildTask, error) {
+	s.executor.Cancel(taskID)
 	return s.repo.Cancel(ctx, taskID, clock.Now())
 }
 
@@ -120,6 +178,108 @@ func (s Service) Retry(ctx context.Context, taskID string, actorID string) (Buil
 		return BuildTask{}, err
 	}
 	return s.repo.FindByID(ctx, retry.ID)
+}
+
+func (s Service) Start(ctx context.Context, taskID string) (BuildTask, error) {
+	task, err := s.repo.FindByID(ctx, taskID)
+	if err != nil {
+		return BuildTask{}, err
+	}
+	if task.Status == StatusQueued || task.Status == StatusCreated {
+		task, _, _, err = s.repo.DispatchTask(ctx, task.ID, clock.Now())
+		if err != nil {
+			return BuildTask{}, err
+		}
+	}
+	if task.Status == StatusDispatchFailed {
+		return task, nil
+	}
+	if task.Status != StatusDispatching {
+		return BuildTask{}, ErrInvalidState
+	}
+
+	host, err := s.hosts.FindByID(ctx, task.HostID)
+	if err != nil {
+		if errors.Is(err, buildhost.ErrNotFound) {
+			return s.repo.FailTask(ctx, task.ID, StatusDispatchFailed, "HOST_NOT_FOUND", "Build host was not found.", clock.Now())
+		}
+		return BuildTask{}, err
+	}
+	if host.ConnectionType != buildhost.ConnectionLocalDocker {
+		return s.repo.FailTask(ctx, task.ID, StatusDispatchFailed, "UNSUPPORTED_HOST", "M9 only supports local Docker build hosts.", clock.Now())
+	}
+
+	prepared, err := s.prepareBuildContext(task)
+	if err != nil {
+		return s.repo.FailTask(ctx, task.ID, StatusPreparingContextFailed, "PREPARE_CONTEXT_FAILED", err.Error(), clock.Now())
+	}
+
+	started, err := s.repo.StartBuild(ctx, task.ID, prepared.ContextRef, prepared.LogPath, clock.Now())
+	if err != nil {
+		return BuildTask{}, err
+	}
+
+	go s.runLocalBuild(started.ID)
+	return started, nil
+}
+
+func (s Service) ReadLogs(ctx context.Context, taskID string) (string, string, error) {
+	task, err := s.repo.FindByID(ctx, taskID)
+	if err != nil {
+		return "", "", err
+	}
+	if task.LogPath == "" {
+		return "", "", ErrLogsNotFound
+	}
+	cleanLogRoot, err := filepath.Abs(s.logDir)
+	if err != nil {
+		return "", "", err
+	}
+	logPath, err := filepath.Abs(task.LogPath)
+	if err != nil {
+		return "", "", err
+	}
+	if !strings.HasPrefix(logPath, cleanLogRoot+string(os.PathSeparator)) && logPath != cleanLogRoot {
+		return "", "", ErrLogsNotFound
+	}
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", "", ErrLogsNotFound
+		}
+		return "", "", err
+	}
+	return string(data), filepath.Base(logPath), nil
+}
+
+func (s Service) runLocalBuild(taskID string) {
+	ctx := context.Background()
+	task, err := s.repo.FindByID(ctx, taskID)
+	if err != nil {
+		s.logger.Warn("load build task for local execution", "task_id", taskID, "error", err)
+		return
+	}
+	host, err := s.hosts.FindByID(ctx, task.HostID)
+	if err != nil {
+		s.completeBuild(ctx, task.ID, fmt.Errorf("load local build host: %w", err))
+		return
+	}
+	contextPath := filepath.Join(s.contextDir, task.ID)
+	err = s.executor.Build(ctx, task, host, contextPath, task.LogPath)
+	s.completeBuild(ctx, task.ID, err)
+}
+
+func (s Service) completeBuild(ctx context.Context, taskID string, buildErr error) {
+	now := clock.Now()
+	if buildErr != nil {
+		if _, err := s.repo.CompleteBuild(ctx, taskID, false, "BUILD_FAILED", buildErr.Error(), now); err != nil {
+			s.logger.Warn("mark build task failed", "task_id", taskID, "error", err)
+		}
+		return
+	}
+	if _, err := s.repo.CompleteBuild(ctx, taskID, true, "", "", now); err != nil {
+		s.logger.Warn("mark build task success", "task_id", taskID, "error", err)
+	}
 }
 
 type normalizedCreateInput struct {

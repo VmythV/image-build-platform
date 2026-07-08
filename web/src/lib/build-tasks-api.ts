@@ -1,4 +1,4 @@
-import { apiFetch } from "@/lib/api"
+import { apiFetch, apiFetchText } from "@/lib/api"
 
 export type BuildTaskStatus =
   | "created"
@@ -96,6 +96,12 @@ export async function dispatchNextBuildTask(): Promise<DispatchResult> {
   })
 }
 
+export async function startBuildTask(id: string): Promise<BuildTask> {
+  return apiFetch<BuildTask>(`/api/v1/build-tasks/${id}/start`, {
+    method: "POST",
+  })
+}
+
 export async function cancelBuildTask(id: string): Promise<BuildTask> {
   return apiFetch<BuildTask>(`/api/v1/build-tasks/${id}/cancel`, {
     method: "POST",
@@ -106,4 +112,8 @@ export async function retryBuildTask(id: string): Promise<BuildTask> {
   return apiFetch<BuildTask>(`/api/v1/build-tasks/${id}/retry`, {
     method: "POST",
   })
+}
+
+export async function getBuildTaskLogs(id: string): Promise<string> {
+  return apiFetchText(`/api/v1/build-tasks/${id}/logs`)
 }

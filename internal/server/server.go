@@ -26,14 +26,17 @@ import (
 )
 
 type Options struct {
-	StaticDir    string
-	Version      string
-	Logger       *slog.Logger
-	DB           *sql.DB
-	DriverName   string
-	SessionTTL   string
-	SecureCookie bool
-	SecretKey    string
+	StaticDir     string
+	Version       string
+	Logger        *slog.Logger
+	DB            *sql.DB
+	DriverName    string
+	SessionTTL    string
+	SecureCookie  bool
+	SecretKey     string
+	ContextDir    string
+	LogDir        string
+	BuildExecutor buildtask.Executor
 }
 
 func New(opts Options) (http.Handler, error) {
@@ -90,11 +93,16 @@ func New(opts Options) (http.Handler, error) {
 		)
 		imageProjectRoutes = imageproject.NewHandler(imageProjectService).Routes()
 		dockerfileRoutes = dockerfile.NewHandler(dockerfile.NewService()).Routes()
-		buildTaskService := buildtask.NewService(
-			buildtask.NewRepository(opts.DB, opts.DriverName),
-			imageproject.NewRepository(opts.DB, opts.DriverName),
-			registry.NewRepository(opts.DB, opts.DriverName),
-		)
+		buildTaskService := buildtask.NewServiceWithOptions(buildtask.ServiceOptions{
+			Repository: buildtask.NewRepository(opts.DB, opts.DriverName),
+			Projects:   imageproject.NewRepository(opts.DB, opts.DriverName),
+			Registries: registry.NewRepository(opts.DB, opts.DriverName),
+			Hosts:      buildhost.NewRepository(opts.DB, opts.DriverName),
+			ContextDir: opts.ContextDir,
+			LogDir:     opts.LogDir,
+			Executor:   opts.BuildExecutor,
+			Logger:     logger,
+		})
 		buildTaskRoutes = buildtask.NewHandler(buildTaskService).Routes()
 	}
 

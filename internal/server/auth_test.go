@@ -5,11 +5,15 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/VmythV/image-build-platform/internal/auth"
+	"github.com/VmythV/image-build-platform/internal/buildhost"
+	"github.com/VmythV/image-build-platform/internal/buildtask"
 	"github.com/VmythV/image-build-platform/internal/config"
 	"github.com/VmythV/image-build-platform/internal/storage"
 )
@@ -379,6 +383,34 @@ func TestBuildTasksQueueDispatchCancelAndRetry(t *testing.T) {
 			t.Fatalf("expected retry dispatching, got %v", task["status"])
 		}
 	})
+
+	postJSON(t, router, "/api/v1/build-tasks/"+retryTaskID+"/start", "", sessionCookie, http.StatusOK, func(rec *httptest.ResponseRecorder) {
+		body := decodeJSONBody(t, rec)
+		data := body["data"].(map[string]any)
+		if data["status"] != "building" {
+			t.Fatalf("expected building status after start, got %v", data["status"])
+		}
+		if data["buildContextRef"] == nil {
+			t.Fatalf("expected build context ref")
+		}
+		if data["logPath"] == nil {
+			t.Fatalf("expected log path")
+		}
+	})
+
+	waitForBuildTaskStatus(t, router, retryTaskID, sessionCookie, "build_success")
+	getJSON(t, router, http.MethodGet, "/api/v1/build-hosts", "", sessionCookie, http.StatusOK, func(body map[string]any) {
+		data := body["data"].([]any)
+		host := data[0].(map[string]any)
+		if host["currentRunning"] != float64(0) {
+			t.Fatalf("expected host running count 0 after build success, got %v", host["currentRunning"])
+		}
+	})
+	getText(t, router, http.MethodGet, "/api/v1/build-tasks/"+retryTaskID+"/logs", sessionCookie, http.StatusOK, func(body string) {
+		if !strings.Contains(body, "fake local build completed") {
+			t.Fatalf("expected fake build log, got %q", body)
+		}
+	})
 }
 
 func newAuthTestRouter(t *testing.T) http.Handler {
@@ -405,11 +437,14 @@ func newAuthTestRouter(t *testing.T) http.Handler {
 	})
 
 	router, err := New(Options{
-		Version:    "test",
-		DB:         store.DB,
-		DriverName: store.DriverName,
-		SessionTTL: cfg.Security.SessionTTL,
-		SecretKey:  cfg.Security.SecretKey,
+		Version:       "test",
+		DB:            store.DB,
+		DriverName:    store.DriverName,
+		SessionTTL:    cfg.Security.SessionTTL,
+		SecretKey:     cfg.Security.SecretKey,
+		ContextDir:    cfg.Storage.ContextDir,
+		LogDir:        cfg.Storage.LogDir,
+		BuildExecutor: fakeBuildExecutor{},
 	})
 	if err != nil {
 		t.Fatalf("new server: %v", err)
@@ -478,6 +513,42 @@ func getJSONRecorder(t *testing.T, router http.Handler, method string, path stri
 	}
 }
 
+func getText(t *testing.T, router http.Handler, method string, path string, cookie *http.Cookie, expectedStatus int, assert func(string)) {
+	t.Helper()
+
+	req := httptest.NewRequest(method, path, nil)
+	if cookie != nil {
+		req.AddCookie(cookie)
+	}
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != expectedStatus {
+		t.Fatalf("expected status %d, got %d: %s", expectedStatus, rec.Code, rec.Body.String())
+	}
+	if assert != nil {
+		assert(rec.Body.String())
+	}
+}
+
+func waitForBuildTaskStatus(t *testing.T, router http.Handler, taskID string, cookie *http.Cookie, expectedStatus string) {
+	t.Helper()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		var currentStatus string
+		getJSON(t, router, http.MethodGet, "/api/v1/build-tasks/"+taskID, "", cookie, http.StatusOK, func(body map[string]any) {
+			data := body["data"].(map[string]any)
+			currentStatus = data["status"].(string)
+		})
+		if currentStatus == expectedStatus {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for build task %s status %s", taskID, expectedStatus)
+}
+
 func decodeJSONBody(t *testing.T, rec *httptest.ResponseRecorder) map[string]any {
 	t.Helper()
 
@@ -486,4 +557,30 @@ func decodeJSONBody(t *testing.T, rec *httptest.ResponseRecorder) map[string]any
 		t.Fatalf("decode response: %v", err)
 	}
 	return response
+}
+
+type fakeBuildExecutor struct{}
+
+func (fakeBuildExecutor) Build(ctx context.Context, task buildtask.BuildTask, host buildhost.BuildHost, contextPath string, logPath string) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+
+	if _, err := os.Stat(filepath.Join(contextPath, "Dockerfile")); err != nil {
+		return err
+	}
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o640)
+	if err != nil {
+		return err
+	}
+	defer logFile.Close()
+
+	_, err = logFile.WriteString("fake local build completed for " + task.ImageRef + " on " + host.Name + "\n")
+	return err
+}
+
+func (fakeBuildExecutor) Cancel(taskID string) bool {
+	return true
 }

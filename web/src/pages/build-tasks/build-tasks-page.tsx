@@ -1,14 +1,16 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { ArchiveX, GitBranch, Loader2, Play, RotateCcw, Server, XCircle } from "lucide-react"
-import { type ReactNode, useMemo, useState } from "react"
+import { ArchiveX, GitBranch, Loader2, Play, RotateCcw, ScrollText, Server, XCircle } from "lucide-react"
+import { type ReactNode, useEffect, useMemo, useState } from "react"
 
 import { Button } from "@/components/ui/button"
 import {
   cancelBuildTask,
   dispatchBuildTask,
   dispatchNextBuildTask,
+  getBuildTaskLogs,
   listBuildTasks,
   retryBuildTask,
+  startBuildTask,
   type BuildTask,
   type BuildTaskStatus,
 } from "@/lib/build-tasks-api"
@@ -24,20 +26,29 @@ const retryableStatuses: BuildTaskStatus[] = [
 ]
 
 const cancelableStatuses: BuildTaskStatus[] = ["created", "queued", "dispatching", "preparing_context", "building", "pushing"]
+const startableStatuses: BuildTaskStatus[] = ["created", "queued", "dispatching"]
 
 export function BuildTasksPage() {
   const queryClient = useQueryClient()
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null)
+  const [logText, setLogText] = useState("")
+  const [logError, setLogError] = useState("")
 
   const tasksQuery = useQuery({
     queryKey: ["build-tasks"],
     queryFn: listBuildTasks,
+    refetchInterval: 2000,
   })
 
   const tasks = tasksQuery.data ?? []
   const selectedTask = useMemo(() => tasks.find((task) => task.id === selectedTaskId) ?? tasks[0] ?? null, [selectedTaskId, tasks])
 
   const invalidateTasks = () => queryClient.invalidateQueries({ queryKey: ["build-tasks"] })
+
+  useEffect(() => {
+    setLogText("")
+    setLogError("")
+  }, [selectedTask?.id])
 
   const dispatchNextMutation = useMutation({
     mutationFn: dispatchNextBuildTask,
@@ -65,6 +76,24 @@ export function BuildTasksPage() {
     onSuccess: (task) => {
       setSelectedTaskId(task.id)
       return invalidateTasks()
+    },
+  })
+  const startMutation = useMutation({
+    mutationFn: startBuildTask,
+    onSuccess: (task) => {
+      setSelectedTaskId(task.id)
+      return invalidateTasks()
+    },
+  })
+  const logsMutation = useMutation({
+    mutationFn: getBuildTaskLogs,
+    onSuccess: (logs) => {
+      setLogText(logs)
+      setLogError("")
+    },
+    onError: (error) => {
+      setLogText("")
+      setLogError(error instanceof Error ? error.message : "Failed to load logs.")
     },
   })
 
@@ -133,12 +162,18 @@ export function BuildTasksPage() {
 
       <TaskDetail
         task={selectedTask}
+        logText={logText}
+        logError={logError}
         dispatchPending={dispatchMutation.isPending}
+        startPending={startMutation.isPending}
         cancelPending={cancelMutation.isPending}
         retryPending={retryMutation.isPending}
+        logsPending={logsMutation.isPending}
         onDispatch={(task) => dispatchMutation.mutate(task.id)}
+        onStart={(task) => startMutation.mutate(task.id)}
         onCancel={(task) => cancelMutation.mutate(task.id)}
         onRetry={(task) => retryMutation.mutate(task.id)}
+        onLoadLogs={(task) => logsMutation.mutate(task.id)}
       />
     </div>
   )
@@ -146,20 +181,32 @@ export function BuildTasksPage() {
 
 function TaskDetail({
   task,
+  logText,
+  logError,
   dispatchPending,
+  startPending,
   cancelPending,
   retryPending,
+  logsPending,
   onDispatch,
+  onStart,
   onCancel,
   onRetry,
+  onLoadLogs,
 }: {
   task: BuildTask | null
+  logText: string
+  logError: string
   dispatchPending: boolean
+  startPending: boolean
   cancelPending: boolean
   retryPending: boolean
+  logsPending: boolean
   onDispatch: (task: BuildTask) => void
+  onStart: (task: BuildTask) => void
   onCancel: (task: BuildTask) => void
   onRetry: (task: BuildTask) => void
+  onLoadLogs: (task: BuildTask) => void
 }) {
   return (
     <aside className="rounded-lg border bg-card p-4 text-card-foreground">
@@ -181,6 +228,10 @@ function TaskDetail({
               {dispatchPending ? <Loader2 className="animate-spin" aria-hidden="true" /> : <Play aria-hidden="true" />}
               Dispatch
             </Button>
+            <Button variant="outline" size="sm" onClick={() => onStart(task)} disabled={!startableStatuses.includes(task.status) || startPending}>
+              {startPending ? <Loader2 className="animate-spin" aria-hidden="true" /> : <Play aria-hidden="true" />}
+              Start
+            </Button>
             <Button variant="outline" size="sm" onClick={() => onCancel(task)} disabled={!cancelableStatuses.includes(task.status) || cancelPending}>
               {cancelPending ? <Loader2 className="animate-spin" aria-hidden="true" /> : <XCircle aria-hidden="true" />}
               Cancel
@@ -188,6 +239,10 @@ function TaskDetail({
             <Button variant="outline" size="sm" onClick={() => onRetry(task)} disabled={!retryableStatuses.includes(task.status) || retryPending}>
               {retryPending ? <Loader2 className="animate-spin" aria-hidden="true" /> : <RotateCcw aria-hidden="true" />}
               Retry
+            </Button>
+            <Button className="col-span-2" variant="outline" size="sm" onClick={() => onLoadLogs(task)} disabled={!task.logPath || logsPending}>
+              {logsPending ? <Loader2 className="animate-spin" aria-hidden="true" /> : <ScrollText aria-hidden="true" />}
+              Load Logs
             </Button>
           </div>
 
@@ -199,6 +254,14 @@ function TaskDetail({
 
           {task.schedulerReason ? <InfoBlock title="Scheduler" detail={task.schedulerReason} /> : null}
           {task.errorMessage ? <InfoBlock title={task.errorCode || "Error"} detail={task.errorMessage} tone="danger" /> : null}
+          {logError ? <InfoBlock title="Logs" detail={logError} tone="danger" /> : null}
+
+          {logText ? (
+            <section>
+              <h3 className="mb-2 text-sm font-semibold">Build Logs</h3>
+              <pre className="max-h-[360px] overflow-auto rounded-md border bg-background p-3 text-xs">{logText}</pre>
+            </section>
+          ) : null}
 
           <section>
             <h3 className="mb-2 text-sm font-semibold">Dockerfile Snapshot</h3>

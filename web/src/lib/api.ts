@@ -55,6 +55,30 @@ export async function apiFetch<T>(path: string, options: ApiFetchOptions = {}): 
   return payload as T
 }
 
+export async function apiFetchText(path: string, options: ApiFetchOptions = {}): Promise<string> {
+  const { json, headers, ...requestOptions } = options
+  const requestHeaders = new Headers(headers)
+
+  if (json !== undefined) {
+    requestHeaders.set("Content-Type", "application/json")
+    requestOptions.body = JSON.stringify(json)
+  }
+
+  const response = await fetch(`${apiBaseURL}${path}`, {
+    credentials: "include",
+    ...requestOptions,
+    headers: requestHeaders,
+  })
+
+  if (!response.ok) {
+    const payload = await readResponse(response)
+    const error = parseAPIError(payload)
+    throw new ApiRequestError(error.message, response.status, error.code, error.details)
+  }
+
+  return response.text()
+}
+
 async function readResponse(response: Response): Promise<unknown> {
   const contentType = response.headers.get("Content-Type") ?? ""
   if (!contentType.includes("application/json")) {

@@ -26,8 +26,10 @@ func (h Handler) Routes() http.Handler {
 	r.Post("/dispatch-next", h.dispatchNext)
 	r.Get("/{id}", h.get)
 	r.Post("/{id}/dispatch", h.dispatch)
+	r.Post("/{id}/start", h.start)
 	r.Post("/{id}/cancel", h.cancel)
 	r.Post("/{id}/retry", h.retry)
+	r.Get("/{id}/logs", h.logs)
 	return r
 }
 
@@ -119,6 +121,19 @@ func (h Handler) dispatchNext(w http.ResponseWriter, r *http.Request) {
 	writeData(w, http.StatusOK, DispatchResult{Task: ToDTO(task), Dispatched: dispatched, Reason: reason})
 }
 
+func (h Handler) start(w http.ResponseWriter, r *http.Request) {
+	if _, ok := requireMaintainer(w, r); !ok {
+		return
+	}
+
+	task, err := h.service.Start(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		handleTaskError(w, err)
+		return
+	}
+	writeData(w, http.StatusOK, ToDTO(task))
+}
+
 func (h Handler) cancel(w http.ResponseWriter, r *http.Request) {
 	if _, ok := requireMaintainer(w, r); !ok {
 		return
@@ -146,6 +161,20 @@ func (h Handler) retry(w http.ResponseWriter, r *http.Request) {
 	writeData(w, http.StatusCreated, ToDTO(task))
 }
 
+func (h Handler) logs(w http.ResponseWriter, r *http.Request) {
+	logs, filename, err := h.service.ReadLogs(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		handleTaskError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Content-Disposition", `inline; filename="`+filename+`"`)
+	w.WriteHeader(http.StatusOK)
+	if _, err := w.Write([]byte(logs)); err != nil {
+		slog.Default().Warn("write build task logs", "error", err)
+	}
+}
+
 func requireMaintainer(w http.ResponseWriter, r *http.Request) (auth.User, bool) {
 	user, ok := auth.UserFromContext(r.Context())
 	if !ok {
@@ -165,6 +194,8 @@ func handleTaskError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "Build task resource not found.", nil)
 	case errors.Is(err, ErrNoQueuedTask):
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "No queued build task.", nil)
+	case errors.Is(err, ErrLogsNotFound):
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "Build task logs not found.", nil)
 	case errors.Is(err, ErrValidation):
 		writeError(w, http.StatusBadRequest, "VALIDATION_FAILED", err.Error(), nil)
 	case errors.Is(err, ErrInvalidState):

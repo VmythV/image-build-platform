@@ -268,6 +268,134 @@ WHERE id = ` + placeholder(r.driverName, 6)
 	return r.FindByID(ctx, task.ID)
 }
 
+func (r Repository) StartBuild(ctx context.Context, taskID string, contextRef string, logPath string, now time.Time) (BuildTask, error) {
+	query := `
+UPDATE build_tasks
+SET status = ` + placeholder(r.driverName, 1) + `,
+    build_context_ref = ` + placeholder(r.driverName, 2) + `,
+    log_path = ` + placeholder(r.driverName, 3) + `,
+    build_started_at = ` + placeholder(r.driverName, 4) + `,
+    started_at = COALESCE(started_at, ` + placeholder(r.driverName, 5) + `),
+    updated_at = ` + placeholder(r.driverName, 6) + `
+WHERE id = ` + placeholder(r.driverName, 7) + ` AND status = ` + placeholder(r.driverName, 8)
+	result, err := r.db.ExecContext(ctx, query, StatusBuilding, contextRef, logPath, formatTime(now), formatTime(now), formatTime(now), taskID, StatusDispatching)
+	if err != nil {
+		return BuildTask{}, fmt.Errorf("start build task: %w", err)
+	}
+	if err = requireRowsAffected(result); err != nil {
+		return BuildTask{}, ErrInvalidState
+	}
+	return r.FindByID(ctx, taskID)
+}
+
+func (r Repository) FailTask(ctx context.Context, taskID string, status string, code string, message string, now time.Time) (BuildTask, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return BuildTask{}, fmt.Errorf("begin build task failure: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	task, err := r.findByID(ctx, tx, taskID)
+	if err != nil {
+		return BuildTask{}, err
+	}
+	if terminalStatus(task.Status) {
+		if err = tx.Commit(); err != nil {
+			return BuildTask{}, fmt.Errorf("commit terminal build task failure no-op: %w", err)
+		}
+		return task, nil
+	}
+	if task.HostID != "" && holdsHostSlot(task.Status) {
+		if err = r.decrementHostRunning(ctx, tx, task.HostID, now); err != nil {
+			return BuildTask{}, err
+		}
+	}
+
+	query := `
+UPDATE build_tasks
+SET status = ` + placeholder(r.driverName, 1) + `,
+    error_code = ` + placeholder(r.driverName, 2) + `,
+    error_message = ` + placeholder(r.driverName, 3) + `,
+    finished_at = ` + placeholder(r.driverName, 4) + `,
+    duration_seconds = ` + placeholder(r.driverName, 5) + `,
+    updated_at = ` + placeholder(r.driverName, 6) + `
+WHERE id = ` + placeholder(r.driverName, 7)
+	result, err := tx.ExecContext(ctx, query, status, code, message, formatTime(now), durationSeconds(task, now), formatTime(now), task.ID)
+	if err != nil {
+		return BuildTask{}, fmt.Errorf("fail build task: %w", err)
+	}
+	if err = requireRowsAffected(result); err != nil {
+		return BuildTask{}, err
+	}
+	if err = tx.Commit(); err != nil {
+		return BuildTask{}, fmt.Errorf("commit build task failure: %w", err)
+	}
+	return r.FindByID(ctx, task.ID)
+}
+
+func (r Repository) CompleteBuild(ctx context.Context, taskID string, success bool, code string, message string, now time.Time) (BuildTask, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return BuildTask{}, fmt.Errorf("begin build task completion: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	task, err := r.findByID(ctx, tx, taskID)
+	if err != nil {
+		return BuildTask{}, err
+	}
+	if terminalStatus(task.Status) {
+		if err = tx.Commit(); err != nil {
+			return BuildTask{}, fmt.Errorf("commit terminal build task completion no-op: %w", err)
+		}
+		return task, nil
+	}
+	if task.Status != StatusBuilding {
+		return BuildTask{}, ErrInvalidState
+	}
+	if task.HostID != "" && holdsHostSlot(task.Status) {
+		if err = r.decrementHostRunning(ctx, tx, task.HostID, now); err != nil {
+			return BuildTask{}, err
+		}
+	}
+
+	status := StatusBuildFailed
+	if success {
+		status = StatusBuildSuccess
+		code = ""
+		message = ""
+	}
+	query := `
+UPDATE build_tasks
+SET status = ` + placeholder(r.driverName, 1) + `,
+    error_code = ` + placeholder(r.driverName, 2) + `,
+    error_message = ` + placeholder(r.driverName, 3) + `,
+    build_finished_at = ` + placeholder(r.driverName, 4) + `,
+    finished_at = ` + placeholder(r.driverName, 5) + `,
+    duration_seconds = ` + placeholder(r.driverName, 6) + `,
+    updated_at = ` + placeholder(r.driverName, 7) + `
+WHERE id = ` + placeholder(r.driverName, 8)
+	result, err := tx.ExecContext(ctx, query, status, nullString(code), nullString(message), formatTime(now), formatTime(now), durationSeconds(task, now), formatTime(now), task.ID)
+	if err != nil {
+		return BuildTask{}, fmt.Errorf("complete build task: %w", err)
+	}
+	if err = requireRowsAffected(result); err != nil {
+		return BuildTask{}, err
+	}
+	if err = tx.Commit(); err != nil {
+		return BuildTask{}, fmt.Errorf("commit build task completion: %w", err)
+	}
+	return r.FindByID(ctx, task.ID)
+}
+
 func (r Repository) findByID(ctx context.Context, exec sqlExecutor, taskID string) (BuildTask, error) {
 	query := selectTaskSQL + `WHERE t.id = ` + placeholder(r.driverName, 1)
 	task, err := scanTask(exec.QueryRowContext(ctx, query, taskID))
@@ -603,6 +731,21 @@ func parseOptionalTime(value sql.NullString) *time.Time {
 		return nil
 	}
 	return &parsed
+}
+
+func durationSeconds(task BuildTask, finishedAt time.Time) int64 {
+	startedAt := task.StartedAt
+	if startedAt == nil {
+		startedAt = task.BuildStartedAt
+	}
+	if startedAt == nil {
+		return int64(finishedAt.Sub(task.CreatedAt).Seconds())
+	}
+	duration := int64(finishedAt.Sub(*startedAt).Seconds())
+	if duration < 0 {
+		return 0
+	}
+	return duration
 }
 
 func terminalStatus(status string) bool {
