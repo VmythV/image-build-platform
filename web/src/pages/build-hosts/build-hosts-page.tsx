@@ -35,6 +35,7 @@ type HostFormState = {
   address: string
   port: string
   username: string
+  privateKey: string
   maxConcurrency: string
   labels: string
 }
@@ -47,6 +48,7 @@ const defaultForm: HostFormState = {
   address: "",
   port: "22",
   username: "",
+  privateKey: "",
   maxConcurrency: "1",
   labels: "local",
 }
@@ -229,6 +231,14 @@ export function BuildHostsPage() {
                       required
                     />
                   </Field>
+                  <Field label="Private Key">
+                    <textarea
+                      className={`${inputClassName} min-h-28 resize-y py-2 font-mono text-xs leading-relaxed md:col-span-2`}
+                      value={form.privateKey}
+                      placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
+                      onChange={(event) => updateForm(setForm, "privateKey", event.target.value)}
+                    />
+                  </Field>
                 </>
               )}
             </div>
@@ -236,7 +246,7 @@ export function BuildHostsPage() {
             {form.connectionType === "ssh" ? (
               <div className="flex gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
                 <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-                <span>SSH checks and remote builds use keys or agent configuration available to the backend process.</span>
+                <span>Empty private key keeps using the backend process SSH agent or system keys.</span>
               </div>
             ) : null}
 
@@ -297,6 +307,9 @@ export function BuildHostsPage() {
                     <td className="px-4 py-3 text-muted-foreground">
                       <div>{host.connectionType === "local_docker" ? "Local Docker" : "SSH"}</div>
                       <div className="mt-1 max-w-44 truncate text-xs">{host.connectionType === "ssh" ? host.address : host.dockerEndpoint}</div>
+                      {host.connectionType === "ssh" && host.credentialConfigured ? (
+                        <div className="mt-1 max-w-44 truncate text-xs">key {host.credentialFingerprint ?? "configured"}</div>
+                      ) : null}
                     </td>
                     <td className="px-4 py-3">{host.architecture ?? "-"}</td>
                     <td className="px-4 py-3">
@@ -415,6 +428,7 @@ function toSaveInput(form: HostFormState): SaveBuildHostInput {
     address: form.address,
     port: Number(form.port || 0),
     username: form.username,
+    privateKey: form.connectionType === "ssh" ? form.privateKey : "",
     dockerEndpoint: form.dockerEndpoint,
     dockerCommand: form.dockerCommand,
     maxConcurrency: Number(form.maxConcurrency || 1),

@@ -36,6 +36,7 @@ type Service struct {
 	artifacts            ArtifactRecorder
 	hosts                buildhost.Repository
 	settings             RuntimeSettings
+	hostCredentials      HostCredentialProvider
 	executor             Executor
 	contextDir           string
 	logDir               string
@@ -62,6 +63,7 @@ type ServiceOptions struct {
 	Artifacts            ArtifactRecorder
 	Hosts                buildhost.Repository
 	Settings             RuntimeSettings
+	HostCredentials      HostCredentialProvider
 	Executor             Executor
 	ContextDir           string
 	LogDir               string
@@ -72,6 +74,10 @@ type ServiceOptions struct {
 
 type RuntimeSettings interface {
 	FindByKey(ctx context.Context, key string) (systemsettings.Setting, error)
+}
+
+type HostCredentialProvider interface {
+	SSHCredential(ctx context.Context, host buildhost.BuildHost) (*buildhost.SSHCredential, error)
 }
 
 type RegistrySecretProvider interface {
@@ -116,6 +122,7 @@ func NewServiceWithOptions(opts ServiceOptions) Service {
 		artifacts:            opts.Artifacts,
 		hosts:                opts.Hosts,
 		settings:             opts.Settings,
+		hostCredentials:      opts.HostCredentials,
 		executor:             executor,
 		contextDir:           contextDir,
 		logDir:               logDir,
@@ -241,7 +248,7 @@ func (s Service) Start(ctx context.Context, taskID string) (BuildTask, error) {
 		return BuildTask{}, ErrInvalidState
 	}
 
-	host, err := s.hosts.FindByID(ctx, task.HostID)
+	host, err := s.hostForExecution(ctx, task.HostID)
 	if err != nil {
 		if errors.Is(err, buildhost.ErrNotFound) {
 			return s.repo.FailTask(ctx, task.ID, StatusDispatchFailed, "HOST_NOT_FOUND", "Build host was not found.", clock.Now())
@@ -317,7 +324,7 @@ func (s Service) runBuild(taskID string) {
 		s.logger.Warn("load build task for execution", "task_id", taskID, "error", err)
 		return
 	}
-	host, err := s.hosts.FindByID(dbCtx, task.HostID)
+	host, err := s.hostForExecution(dbCtx, task.HostID)
 	if err != nil {
 		s.completeBuild(dbCtx, task.ID, fmt.Errorf("load build host: %w", err))
 		return
@@ -346,6 +353,22 @@ func (s Service) completeBuild(ctx context.Context, taskID string, buildErr erro
 	if _, err := s.repo.CompleteBuild(ctx, taskID, true, "", "", now); err != nil {
 		s.logger.Warn("mark build task success", "task_id", taskID, "error", err)
 	}
+}
+
+func (s Service) hostForExecution(ctx context.Context, hostID string) (buildhost.BuildHost, error) {
+	host, err := s.hosts.FindByID(ctx, hostID)
+	if err != nil {
+		return buildhost.BuildHost{}, err
+	}
+	if s.hostCredentials == nil || host.ConnectionType != buildhost.ConnectionSSH {
+		return host, nil
+	}
+	sshCredential, err := s.hostCredentials.SSHCredential(ctx, host)
+	if err != nil {
+		return buildhost.BuildHost{}, err
+	}
+	host.SSHCredential = sshCredential
+	return host, nil
 }
 
 func (s Service) pushBuild(execCtx context.Context, dbCtx context.Context, task BuildTask, host buildhost.BuildHost) {

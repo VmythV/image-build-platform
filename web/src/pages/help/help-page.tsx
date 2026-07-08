@@ -36,7 +36,7 @@ export function HelpPage() {
           icon={<KeyRound className="size-4" aria-hidden="true" />}
           title="SSH Builders"
           items={[
-            "SSH builders use the ssh command, keys, and ssh-agent available to the backend process.",
+            "SSH builders can use an encrypted private key saved on the host record or the backend process SSH agent.",
             "The remote user must be able to run Docker and create temporary directories under /tmp.",
             "Remote builds upload a temporary context and clean it up after execution.",
           ]}

@@ -124,11 +124,17 @@ func dockerEnv(host BuildHost) []string {
 }
 
 func runSSH(ctx context.Context, host BuildHost, remoteCommand string) (string, error) {
+	runtimeHost, cleanup, err := PrepareSSHIdentity(host)
+	if err != nil {
+		return "", err
+	}
+	defer cleanup()
+
 	port := host.Port
 	if port == 0 {
 		port = 22
 	}
-	target := host.Username + "@" + host.Address
+	target := runtimeHost.Username + "@" + runtimeHost.Address
 	args := []string{
 		"-o", "BatchMode=yes",
 		"-o", "ConnectTimeout=10",
@@ -136,6 +142,9 @@ func runSSH(ctx context.Context, host BuildHost, remoteCommand string) (string, 
 		"-p", strconv.Itoa(port),
 		target,
 		"sh -lc " + shellQuote(remoteCommand),
+	}
+	if runtimeHost.SSHIdentityFile != "" {
+		args = append([]string{"-i", runtimeHost.SSHIdentityFile, "-o", "IdentitiesOnly=yes"}, args...)
 	}
 
 	cmd := exec.CommandContext(ctx, "ssh", args...)

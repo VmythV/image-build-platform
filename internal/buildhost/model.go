@@ -17,53 +17,58 @@ const (
 )
 
 type BuildHost struct {
-	ID                string
-	Name              string
-	ConnectionType    string
-	Address           string
-	Port              int
-	Username          string
-	CredentialID      string
-	DockerEndpoint    string
-	DockerCommand     string
-	Architecture      string
-	OS                string
-	DockerVersion     string
-	BuildkitSupported bool
-	Labels            []string
-	MaxConcurrency    int
-	CurrentRunning    int
-	Status            string
-	LastCheckedAt     *time.Time
-	LastCheckResult   string
-	LastError         string
-	CreatedBy         string
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
+	ID                    string
+	Name                  string
+	ConnectionType        string
+	Address               string
+	Port                  int
+	Username              string
+	CredentialID          string
+	CredentialFingerprint string
+	DockerEndpoint        string
+	DockerCommand         string
+	Architecture          string
+	OS                    string
+	DockerVersion         string
+	BuildkitSupported     bool
+	Labels                []string
+	MaxConcurrency        int
+	CurrentRunning        int
+	Status                string
+	LastCheckedAt         *time.Time
+	LastCheckResult       string
+	LastError             string
+	CreatedBy             string
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
+	SSHCredential         *SSHCredential
+	SSHIdentityFile       string
 }
 
 type BuildHostDTO struct {
-	ID                string   `json:"id"`
-	Name              string   `json:"name"`
-	ConnectionType    string   `json:"connectionType"`
-	Address           *string  `json:"address"`
-	Port              *int     `json:"port"`
-	Username          *string  `json:"username"`
-	DockerEndpoint    *string  `json:"dockerEndpoint"`
-	DockerCommand     *string  `json:"dockerCommand"`
-	Architecture      *string  `json:"architecture"`
-	OS                *string  `json:"os"`
-	DockerVersion     *string  `json:"dockerVersion"`
-	BuildkitSupported bool     `json:"buildkitSupported"`
-	Labels            []string `json:"labels"`
-	MaxConcurrency    int      `json:"maxConcurrency"`
-	CurrentRunning    int      `json:"currentRunning"`
-	Status            string   `json:"status"`
-	LastCheckedAt     *string  `json:"lastCheckedAt"`
-	LastError         *string  `json:"lastError"`
-	CreatedBy         *string  `json:"createdBy"`
-	CreatedAt         string   `json:"createdAt"`
-	UpdatedAt         string   `json:"updatedAt"`
+	ID                    string   `json:"id"`
+	Name                  string   `json:"name"`
+	ConnectionType        string   `json:"connectionType"`
+	Address               *string  `json:"address"`
+	Port                  *int     `json:"port"`
+	Username              *string  `json:"username"`
+	CredentialConfigured  bool     `json:"credentialConfigured"`
+	CredentialFingerprint *string  `json:"credentialFingerprint"`
+	DockerEndpoint        *string  `json:"dockerEndpoint"`
+	DockerCommand         *string  `json:"dockerCommand"`
+	Architecture          *string  `json:"architecture"`
+	OS                    *string  `json:"os"`
+	DockerVersion         *string  `json:"dockerVersion"`
+	BuildkitSupported     bool     `json:"buildkitSupported"`
+	Labels                []string `json:"labels"`
+	MaxConcurrency        int      `json:"maxConcurrency"`
+	CurrentRunning        int      `json:"currentRunning"`
+	Status                string   `json:"status"`
+	LastCheckedAt         *string  `json:"lastCheckedAt"`
+	LastError             *string  `json:"lastError"`
+	CreatedBy             *string  `json:"createdBy"`
+	CreatedAt             string   `json:"createdAt"`
+	UpdatedAt             string   `json:"updatedAt"`
 }
 
 type SaveInput struct {
@@ -76,6 +81,11 @@ type SaveInput struct {
 	DockerCommand  string   `json:"dockerCommand"`
 	MaxConcurrency int      `json:"maxConcurrency"`
 	Labels         []string `json:"labels"`
+	PrivateKey     string   `json:"privateKey"`
+}
+
+type SSHCredential struct {
+	PrivateKey string `json:"privateKey"`
 }
 
 type ListFilter struct {
@@ -111,27 +121,29 @@ func ToDTO(host BuildHost) BuildHostDTO {
 	}
 
 	return BuildHostDTO{
-		ID:                host.ID,
-		Name:              host.Name,
-		ConnectionType:    host.ConnectionType,
-		Address:           stringPtr(host.Address),
-		Port:              intPtr(host.Port),
-		Username:          stringPtr(host.Username),
-		DockerEndpoint:    stringPtr(host.DockerEndpoint),
-		DockerCommand:     stringPtr(host.DockerCommand),
-		Architecture:      stringPtr(host.Architecture),
-		OS:                stringPtr(host.OS),
-		DockerVersion:     stringPtr(host.DockerVersion),
-		BuildkitSupported: host.BuildkitSupported,
-		Labels:            host.Labels,
-		MaxConcurrency:    host.MaxConcurrency,
-		CurrentRunning:    host.CurrentRunning,
-		Status:            host.Status,
-		LastCheckedAt:     lastCheckedAt,
-		LastError:         stringPtr(host.LastError),
-		CreatedBy:         stringPtr(host.CreatedBy),
-		CreatedAt:         host.CreatedAt.UTC().Format(time.RFC3339),
-		UpdatedAt:         host.UpdatedAt.UTC().Format(time.RFC3339),
+		ID:                    host.ID,
+		Name:                  host.Name,
+		ConnectionType:        host.ConnectionType,
+		Address:               stringPtr(host.Address),
+		Port:                  intPtr(host.Port),
+		Username:              stringPtr(host.Username),
+		CredentialConfigured:  host.CredentialID != "",
+		CredentialFingerprint: stringPtr(host.CredentialFingerprint),
+		DockerEndpoint:        stringPtr(host.DockerEndpoint),
+		DockerCommand:         stringPtr(host.DockerCommand),
+		Architecture:          stringPtr(host.Architecture),
+		OS:                    stringPtr(host.OS),
+		DockerVersion:         stringPtr(host.DockerVersion),
+		BuildkitSupported:     host.BuildkitSupported,
+		Labels:                host.Labels,
+		MaxConcurrency:        host.MaxConcurrency,
+		CurrentRunning:        host.CurrentRunning,
+		Status:                host.Status,
+		LastCheckedAt:         lastCheckedAt,
+		LastError:             stringPtr(host.LastError),
+		CreatedBy:             stringPtr(host.CreatedBy),
+		CreatedAt:             host.CreatedAt.UTC().Format(time.RFC3339),
+		UpdatedAt:             host.UpdatedAt.UTC().Format(time.RFC3339),
 	}
 }
 

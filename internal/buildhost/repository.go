@@ -33,7 +33,7 @@ func (r Repository) CountLocalHosts(ctx context.Context) (int, error) {
 
 func (r Repository) List(ctx context.Context, filter ListFilter) ([]BuildHost, int, error) {
 	where, args := r.filterWhere(filter)
-	countQuery := "SELECT COUNT(*) FROM build_hosts " + where
+	countQuery := "SELECT COUNT(*) FROM build_hosts h " + where
 
 	var total int
 	if err := r.db.QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
@@ -45,12 +45,8 @@ func (r Repository) List(ctx context.Context, filter ListFilter) ([]BuildHost, i
 	offset := (page - 1) * pageSize
 	args = append(args, pageSize, offset)
 
-	query := `
-SELECT id, name, connection_type, address, port, username, credential_id, docker_endpoint, docker_command,
-       architecture, os, docker_version, buildkit_supported, labels, max_concurrency, current_running,
-       status, last_checked_at, last_check_result, last_error, created_by, created_at, updated_at
-FROM build_hosts ` + where + `
-ORDER BY created_at DESC
+	query := selectHostSQL + where + `
+ORDER BY h.created_at DESC
 LIMIT ` + placeholder(r.driverName, len(args)-1) + ` OFFSET ` + placeholder(r.driverName, len(args))
 
 	rows, err := r.db.QueryContext(ctx, query, args...)
@@ -75,12 +71,8 @@ LIMIT ` + placeholder(r.driverName, len(args)-1) + ` OFFSET ` + placeholder(r.dr
 }
 
 func (r Repository) FindByID(ctx context.Context, id string) (BuildHost, error) {
-	query := `
-SELECT id, name, connection_type, address, port, username, credential_id, docker_endpoint, docker_command,
-       architecture, os, docker_version, buildkit_supported, labels, max_concurrency, current_running,
-       status, last_checked_at, last_check_result, last_error, created_by, created_at, updated_at
-FROM build_hosts
-WHERE id = ` + placeholder(r.driverName, 1) + ` AND deleted_at IS NULL`
+	query := selectHostSQL + `
+WHERE h.id = ` + placeholder(r.driverName, 1) + ` AND h.deleted_at IS NULL`
 
 	row := r.db.QueryRowContext(ctx, query, id)
 	host, err := scanHost(row)
@@ -153,20 +145,21 @@ SET name = ` + placeholder(r.driverName, 1) + `,
     address = ` + placeholder(r.driverName, 3) + `,
     port = ` + placeholder(r.driverName, 4) + `,
     username = ` + placeholder(r.driverName, 5) + `,
-    docker_endpoint = ` + placeholder(r.driverName, 6) + `,
-    docker_command = ` + placeholder(r.driverName, 7) + `,
+    credential_id = ` + placeholder(r.driverName, 6) + `,
+    docker_endpoint = ` + placeholder(r.driverName, 7) + `,
+    docker_command = ` + placeholder(r.driverName, 8) + `,
     architecture = NULL,
     os = NULL,
     docker_version = NULL,
-    buildkit_supported = ` + placeholder(r.driverName, 8) + `,
-    labels = ` + placeholder(r.driverName, 9) + `,
-    max_concurrency = ` + placeholder(r.driverName, 10) + `,
-    status = ` + placeholder(r.driverName, 11) + `,
+    buildkit_supported = ` + placeholder(r.driverName, 9) + `,
+    labels = ` + placeholder(r.driverName, 10) + `,
+    max_concurrency = ` + placeholder(r.driverName, 11) + `,
+    status = ` + placeholder(r.driverName, 12) + `,
     last_checked_at = NULL,
     last_check_result = NULL,
     last_error = NULL,
-    updated_at = ` + placeholder(r.driverName, 12) + `
-WHERE id = ` + placeholder(r.driverName, 13) + ` AND deleted_at IS NULL`
+    updated_at = ` + placeholder(r.driverName, 13) + `
+WHERE id = ` + placeholder(r.driverName, 14) + ` AND deleted_at IS NULL`
 
 	result, err := r.db.ExecContext(
 		ctx,
@@ -176,6 +169,7 @@ WHERE id = ` + placeholder(r.driverName, 13) + ` AND deleted_at IS NULL`
 		nullString(host.Address),
 		nullInt(host.Port),
 		nullString(host.Username),
+		nullString(host.CredentialID),
 		nullString(host.DockerEndpoint),
 		nullString(host.DockerCommand),
 		false,
@@ -259,24 +253,33 @@ WHERE id = ` + placeholder(r.driverName, 3) + ` AND deleted_at IS NULL`
 }
 
 func (r Repository) filterWhere(filter ListFilter) (string, []any) {
-	clauses := []string{"deleted_at IS NULL"}
+	clauses := []string{"h.deleted_at IS NULL"}
 	args := make([]any, 0, 3)
 
 	if strings.TrimSpace(filter.Status) != "" {
 		args = append(args, strings.TrimSpace(filter.Status))
-		clauses = append(clauses, "status = "+placeholder(r.driverName, len(args)))
+		clauses = append(clauses, "h.status = "+placeholder(r.driverName, len(args)))
 	}
 	if strings.TrimSpace(filter.Architecture) != "" {
 		args = append(args, strings.TrimSpace(filter.Architecture))
-		clauses = append(clauses, "architecture = "+placeholder(r.driverName, len(args)))
+		clauses = append(clauses, "h.architecture = "+placeholder(r.driverName, len(args)))
 	}
 	if strings.TrimSpace(filter.ConnectionType) != "" {
 		args = append(args, strings.TrimSpace(filter.ConnectionType))
-		clauses = append(clauses, "connection_type = "+placeholder(r.driverName, len(args)))
+		clauses = append(clauses, "h.connection_type = "+placeholder(r.driverName, len(args)))
 	}
 
 	return "WHERE " + strings.Join(clauses, " AND "), args
 }
+
+const selectHostSQL = `
+SELECT h.id, h.name, h.connection_type, h.address, h.port, h.username, h.credential_id, c.fingerprint,
+       h.docker_endpoint, h.docker_command, h.architecture, h.os, h.docker_version, h.buildkit_supported,
+       h.labels, h.max_concurrency, h.current_running, h.status, h.last_checked_at, h.last_check_result,
+       h.last_error, h.created_by, h.created_at, h.updated_at
+FROM build_hosts h
+LEFT JOIN credentials c ON c.id = h.credential_id
+`
 
 type rowScanner interface {
 	Scan(dest ...any) error
@@ -288,6 +291,7 @@ func scanHost(row rowScanner) (BuildHost, error) {
 	var port sql.NullInt64
 	var username sql.NullString
 	var credentialID sql.NullString
+	var credentialFingerprint sql.NullString
 	var dockerEndpoint sql.NullString
 	var dockerCommand sql.NullString
 	var architecture sql.NullString
@@ -309,6 +313,7 @@ func scanHost(row rowScanner) (BuildHost, error) {
 		&port,
 		&username,
 		&credentialID,
+		&credentialFingerprint,
 		&dockerEndpoint,
 		&dockerCommand,
 		&architecture,
@@ -336,6 +341,7 @@ func scanHost(row rowScanner) (BuildHost, error) {
 	}
 	host.Username = username.String
 	host.CredentialID = credentialID.String
+	host.CredentialFingerprint = credentialFingerprint.String
 	host.DockerEndpoint = dockerEndpoint.String
 	host.DockerCommand = dockerCommand.String
 	host.Architecture = architecture.String

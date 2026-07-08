@@ -4,6 +4,7 @@ import "time"
 
 const (
 	TypeRegistryPassword = "registry_password"
+	TypeSSHPrivateKey    = "ssh_private_key"
 
 	EncryptionVersion = 1
 )

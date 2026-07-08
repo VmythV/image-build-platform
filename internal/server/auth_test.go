@@ -183,12 +183,32 @@ func TestBuildHostsRequireAuthAndCRUD(t *testing.T) {
 	})
 
 	var sshHostID string
-	postJSON(t, router, "/api/v1/build-hosts", `{"name":"SSH Builder","connectionType":"ssh","address":"192.0.2.10","port":22,"username":"builder","dockerCommand":"docker","maxConcurrency":1,"labels":["remote","arm64"]}`, sessionCookie, http.StatusCreated, func(rec *httptest.ResponseRecorder) {
+	postJSON(t, router, "/api/v1/build-hosts", `{"name":"SSH Builder","connectionType":"ssh","address":"192.0.2.10","port":22,"username":"builder","privateKey":"-----BEGIN OPENSSH PRIVATE KEY-----\nfake-key\n-----END OPENSSH PRIVATE KEY-----","dockerCommand":"docker","maxConcurrency":1,"labels":["remote","arm64"]}`, sessionCookie, http.StatusCreated, func(rec *httptest.ResponseRecorder) {
+		if strings.Contains(rec.Body.String(), "fake-key") || strings.Contains(rec.Body.String(), "PRIVATE KEY") {
+			t.Fatalf("build host response leaked private key")
+		}
 		body := decodeJSONBody(t, rec)
 		data := body["data"].(map[string]any)
 		sshHostID = data["id"].(string)
 		if data["connectionType"] != "ssh" {
 			t.Fatalf("expected ssh host, got %v", data["connectionType"])
+		}
+		if data["credentialConfigured"] != true {
+			t.Fatalf("expected SSH credential configured")
+		}
+		if data["credentialFingerprint"] == nil {
+			t.Fatalf("expected SSH credential fingerprint")
+		}
+	})
+
+	getJSONRecorder(t, router, http.MethodPut, "/api/v1/build-hosts/"+sshHostID, `{"name":"SSH Builder Updated","connectionType":"ssh","address":"192.0.2.11","port":2222,"username":"builder","dockerCommand":"docker","maxConcurrency":1,"labels":["remote","arm64"]}`, sessionCookie, http.StatusOK, func(rec *httptest.ResponseRecorder) {
+		body := decodeJSONBody(t, rec)
+		data := body["data"].(map[string]any)
+		if data["credentialConfigured"] != true {
+			t.Fatalf("expected SSH credential to remain configured")
+		}
+		if data["address"] != "192.0.2.11" {
+			t.Fatalf("expected updated address, got %v", data["address"])
 		}
 	})
 
@@ -574,7 +594,7 @@ func TestBuildTasksCanRunOnSSHHost(t *testing.T) {
 	postJSON(t, router, "/api/v1/registries", `{"name":"Push Registry","type":"generic","endpoint":"registry.example.com","namespace":"platform","allowPull":true,"allowPush":true,"isDefaultPull":false,"isDefaultPush":true,"tlsVerify":true,"insecureHttp":false}`, sessionCookie, http.StatusCreated, nil)
 
 	var sshHostID string
-	postJSON(t, router, "/api/v1/build-hosts", `{"name":"SSH Builder","connectionType":"ssh","address":"192.0.2.10","port":22,"username":"builder","dockerCommand":"docker","maxConcurrency":1,"labels":["remote","amd64"]}`, sessionCookie, http.StatusCreated, func(rec *httptest.ResponseRecorder) {
+	postJSON(t, router, "/api/v1/build-hosts", `{"name":"SSH Builder","connectionType":"ssh","address":"192.0.2.10","port":22,"username":"builder","privateKey":"-----BEGIN OPENSSH PRIVATE KEY-----\nfake-key\n-----END OPENSSH PRIVATE KEY-----","dockerCommand":"docker","maxConcurrency":1,"labels":["remote","amd64"]}`, sessionCookie, http.StatusCreated, func(rec *httptest.ResponseRecorder) {
 		body := decodeJSONBody(t, rec)
 		data := body["data"].(map[string]any)
 		sshHostID = data["id"].(string)
@@ -622,6 +642,9 @@ func TestBuildTasksCanRunOnSSHHost(t *testing.T) {
 	getText(t, router, http.MethodGet, "/api/v1/build-tasks/"+taskID+"/logs", sessionCookie, http.StatusOK, func(body string) {
 		if !strings.Contains(body, "on SSH Builder") {
 			t.Fatalf("expected SSH host name in fake build log, got %q", body)
+		}
+		if !strings.Contains(body, "with SSH credential") {
+			t.Fatalf("expected fake SSH build to receive decrypted credential, got %q", body)
 		}
 	})
 }
@@ -796,7 +819,11 @@ func (fakeBuildExecutor) Build(ctx context.Context, task buildtask.BuildTask, ho
 	}
 	defer logFile.Close()
 
-	_, err = logFile.WriteString("fake local build completed for " + task.ImageRef + " on " + host.Name + "\n")
+	credentialNote := ""
+	if host.ConnectionType == buildhost.ConnectionSSH && host.SSHCredential != nil && host.SSHCredential.PrivateKey != "" {
+		credentialNote = " with SSH credential"
+	}
+	_, err = logFile.WriteString("fake local build completed for " + task.ImageRef + " on " + host.Name + credentialNote + "\n")
 	return err
 }
 

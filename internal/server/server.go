@@ -82,10 +82,18 @@ func New(opts Options) (http.Handler, error) {
 		})
 		authRoutes = authHandler.Routes()
 
-		buildHostService := buildhost.NewService(
-			buildhost.NewRepository(opts.DB, opts.DriverName),
-			buildhost.CommandDetector{},
-		)
+		credentialEncryptor, err := credential.NewEncryptor(opts.SecretKey)
+		if err != nil {
+			return nil, fmt.Errorf("initialize credential encryption: %w", err)
+		}
+		credentialRepo := credential.NewRepository(opts.DB, opts.DriverName)
+
+		buildHostService := buildhost.NewServiceWithOptions(buildhost.ServiceOptions{
+			Repository:  buildhost.NewRepository(opts.DB, opts.DriverName),
+			Detector:    buildhost.CommandDetector{},
+			Credentials: credentialRepo,
+			Encryptor:   credentialEncryptor,
+		})
 		if err := buildHostService.EnsureDefaultLocalHost(context.Background()); err != nil {
 			return nil, fmt.Errorf("ensure default local build host: %w", err)
 		}
@@ -98,13 +106,9 @@ func New(opts Options) (http.Handler, error) {
 		auditRepo = audit.NewRepository(opts.DB, opts.DriverName)
 		auditRoutes = audit.NewHandler(auditRepo).Routes()
 
-		credentialEncryptor, err := credential.NewEncryptor(opts.SecretKey)
-		if err != nil {
-			return nil, fmt.Errorf("initialize credential encryption: %w", err)
-		}
 		registryService := registry.NewService(
 			registry.NewRepository(opts.DB, opts.DriverName),
-			credential.NewRepository(opts.DB, opts.DriverName),
+			credentialRepo,
 			credentialEncryptor,
 			registry.CommandDetector{},
 		)
@@ -126,6 +130,7 @@ func New(opts Options) (http.Handler, error) {
 			Artifacts:            artifactRepo,
 			Hosts:                buildhost.NewRepository(opts.DB, opts.DriverName),
 			Settings:             settingsRepo,
+			HostCredentials:      buildHostService,
 			ContextDir:           opts.ContextDir,
 			LogDir:               opts.LogDir,
 			DefaultBuildTimeout:  opts.DefaultBuildTimeout,

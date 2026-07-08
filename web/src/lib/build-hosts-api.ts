@@ -9,6 +9,8 @@ export type BuildHost = {
   address?: string | null
   port?: number | null
   username?: string | null
+  credentialConfigured: boolean
+  credentialFingerprint?: string | null
   dockerEndpoint?: string | null
   dockerCommand?: string | null
   architecture?: string | null
@@ -31,6 +33,7 @@ export type SaveBuildHostInput = {
   address?: string
   port?: number
   username?: string
+  privateKey?: string
   dockerEndpoint?: string
   dockerCommand?: string
   maxConcurrency: number

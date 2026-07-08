@@ -99,6 +99,12 @@ func (e *LocalDockerExecutor) buildLocal(ctx context.Context, task BuildTask, ho
 }
 
 func (e *LocalDockerExecutor) buildSSH(ctx context.Context, task BuildTask, host buildhost.BuildHost, contextPath string, logFile *os.File) error {
+	sshHost, cleanup, err := buildhost.PrepareSSHIdentity(host)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
 	dockerCommand := strings.TrimSpace(host.DockerCommand)
 	if dockerCommand == "" {
 		dockerCommand = buildhost.DefaultDockerCommand
@@ -106,18 +112,18 @@ func (e *LocalDockerExecutor) buildSSH(ctx context.Context, task BuildTask, host
 
 	remoteDir := remoteBuildDir(task.ID)
 
-	_, _ = fmt.Fprintf(logFile, "\n[%s] ssh upload build context to %s:%s\n", time.Now().UTC().Format(time.RFC3339), sshTarget(host), remoteDir)
-	if err := uploadSSHContext(ctx, host, contextPath, remoteDir, logFile); err != nil {
+	_, _ = fmt.Fprintf(logFile, "\n[%s] ssh upload build context to %s:%s\n", time.Now().UTC().Format(time.RFC3339), sshTarget(sshHost), remoteDir)
+	if err := uploadSSHContext(ctx, sshHost, contextPath, remoteDir, logFile); err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 		return fmt.Errorf("upload SSH build context failed: %w", err)
 	}
-	defer cleanupSSHContext(host, remoteDir, logFile)
+	defer cleanupSSHContext(sshHost, remoteDir, logFile)
 
 	buildArgs := dockerBuildArgs(task)
 	buildCommand := "cd " + shellQuote(remoteDir) + " && " + shellJoin(append([]string{dockerCommand}, buildArgs...))
-	if err := runSSHCommand(ctx, host, buildCommand, logFile, nil); err != nil {
+	if err := runSSHCommand(ctx, sshHost, buildCommand, logFile, nil); err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -126,7 +132,7 @@ func (e *LocalDockerExecutor) buildSSH(ctx context.Context, task BuildTask, host
 
 	inspectArgs := []string{"image", "inspect", task.ImageRef}
 	inspectCommand := shellJoin(append([]string{dockerCommand}, inspectArgs...))
-	if err := runSSHCommand(ctx, host, inspectCommand, logFile, nil); err != nil {
+	if err := runSSHCommand(ctx, sshHost, inspectCommand, logFile, nil); err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -204,35 +210,41 @@ func (e *LocalDockerExecutor) pushLocal(ctx context.Context, task BuildTask, hos
 }
 
 func (e *LocalDockerExecutor) pushSSH(ctx context.Context, task BuildTask, host buildhost.BuildHost, pushRegistry registry.Registry, secret *registry.RegistrySecret, logFile *os.File) (PushResult, error) {
+	sshHost, cleanup, err := buildhost.PrepareSSHIdentity(host)
+	if err != nil {
+		return PushResult{}, err
+	}
+	defer cleanup()
+
 	dockerCommand := strings.TrimSpace(host.DockerCommand)
 	if dockerCommand == "" {
 		dockerCommand = buildhost.DefaultDockerCommand
 	}
 
 	configDir := remoteBuildDir(task.ID) + "-docker-config"
-	if err := runSSHCommand(ctx, host, "rm -rf "+shellQuote(configDir)+" && mkdir -p "+shellQuote(configDir), logFile, nil); err != nil {
+	if err := runSSHCommand(ctx, sshHost, "rm -rf "+shellQuote(configDir)+" && mkdir -p "+shellQuote(configDir), logFile, nil); err != nil {
 		if ctx.Err() != nil {
 			return PushResult{}, ctx.Err()
 		}
 		return PushResult{}, fmt.Errorf("prepare remote Docker config failed: %w", err)
 	}
-	defer cleanupSSHContext(host, configDir, logFile)
+	defer cleanupSSHContext(sshHost, configDir, logFile)
 
 	if secret != nil && secret.Username != "" && secret.Password != "" {
 		loginCommand := withDockerConfig(configDir, shellJoin([]string{dockerCommand, "login", pushRegistry.Endpoint, "--username", secret.Username, "--password-stdin"}))
-		if err := runSSHCommand(ctx, host, loginCommand, logFile, strings.NewReader(secret.Password)); err != nil {
+		if err := runSSHCommand(ctx, sshHost, loginCommand, logFile, strings.NewReader(secret.Password)); err != nil {
 			if ctx.Err() != nil {
 				return PushResult{}, ctx.Err()
 			}
 			return PushResult{}, fmt.Errorf("remote docker login failed: %w", err)
 		}
 		defer func() {
-			_ = runSSHCommand(context.Background(), host, withDockerConfig(configDir, shellJoin([]string{dockerCommand, "logout", pushRegistry.Endpoint})), logFile, nil)
+			_ = runSSHCommand(context.Background(), sshHost, withDockerConfig(configDir, shellJoin([]string{dockerCommand, "logout", pushRegistry.Endpoint})), logFile, nil)
 		}()
 	}
 
 	pushCommand := withDockerConfig(configDir, shellJoin([]string{dockerCommand, "push", task.ImageRef}))
-	if err := runSSHCommand(ctx, host, pushCommand, logFile, nil); err != nil {
+	if err := runSSHCommand(ctx, sshHost, pushCommand, logFile, nil); err != nil {
 		if ctx.Err() != nil {
 			return PushResult{}, ctx.Err()
 		}
@@ -240,7 +252,7 @@ func (e *LocalDockerExecutor) pushSSH(ctx context.Context, task BuildTask, host 
 	}
 
 	inspectCommand := shellJoin([]string{dockerCommand, "image", "inspect", "--format", "{{.Id}}|{{if .RepoDigests}}{{index .RepoDigests 0}}{{end}}|{{.Size}}", task.ImageRef})
-	output, err := runSSHCommandWithOutput(ctx, host, inspectCommand, logFile)
+	output, err := runSSHCommandWithOutput(ctx, sshHost, inspectCommand, logFile)
 	if err != nil {
 		if ctx.Err() != nil {
 			return PushResult{}, ctx.Err()
@@ -412,7 +424,7 @@ func sshArgs(host buildhost.BuildHost, remoteCommand string) []string {
 	if port == 0 {
 		port = 22
 	}
-	return []string{
+	args := []string{
 		"-o", "BatchMode=yes",
 		"-o", "ConnectTimeout=10",
 		"-o", "StrictHostKeyChecking=accept-new",
@@ -420,6 +432,10 @@ func sshArgs(host buildhost.BuildHost, remoteCommand string) []string {
 		sshTarget(host),
 		"sh -lc " + shellQuote(remoteCommand),
 	}
+	if host.SSHIdentityFile != "" {
+		args = append([]string{"-i", host.SSHIdentityFile, "-o", "IdentitiesOnly=yes"}, args...)
+	}
+	return args
 }
 
 func sshTarget(host buildhost.BuildHost) string {
