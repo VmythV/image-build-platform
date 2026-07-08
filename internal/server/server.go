@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -13,21 +14,42 @@ import (
 	"strings"
 	"time"
 
+	"github.com/VmythV/image-build-platform/internal/auth"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 )
 
 type Options struct {
-	StaticDir string
-	Version   string
-	Logger    *slog.Logger
-	DB        *sql.DB
+	StaticDir    string
+	Version      string
+	Logger       *slog.Logger
+	DB           *sql.DB
+	DriverName   string
+	SessionTTL   string
+	SecureCookie bool
 }
 
-func New(opts Options) http.Handler {
+func New(opts Options) (http.Handler, error) {
 	logger := opts.Logger
 	if logger == nil {
 		logger = slog.Default()
+	}
+
+	var authRoutes http.Handler
+	if opts.DB != nil {
+		service, err := auth.NewService(auth.ServiceOptions{
+			Repository: auth.NewRepository(opts.DB, opts.DriverName),
+			SessionTTL: opts.SessionTTL,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("initialize auth service: %w", err)
+		}
+
+		handler := auth.NewHandler(auth.HandlerOptions{
+			Service:      service,
+			SecureCookie: opts.SecureCookie,
+		})
+		authRoutes = handler.Routes()
 	}
 
 	r := chi.NewRouter()
@@ -41,13 +63,16 @@ func New(opts Options) http.Handler {
 
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Get("/status", statusHandler(opts.Version))
+		if authRoutes != nil {
+			r.Mount("/", authRoutes)
+		}
 	})
 
 	if opts.StaticDir != "" {
 		r.NotFound(spaFallback(opts.StaticDir, logger))
 	}
 
-	return r
+	return r, nil
 }
 
 func healthHandler(version string, db *sql.DB) http.HandlerFunc {

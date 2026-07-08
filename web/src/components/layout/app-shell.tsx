@@ -6,12 +6,15 @@ import {
   Home,
   Image,
   ListChecks,
+  LogOut,
   Settings,
+  UserCircle,
   Warehouse,
 } from "lucide-react"
 import { type PropsWithChildren } from "react"
 
 import { Button } from "@/components/ui/button"
+import { type User } from "@/lib/auth-api"
 import { cn } from "@/lib/utils"
 
 const navigation = [
@@ -25,7 +28,13 @@ const navigation = [
   { label: "Help", icon: HelpCircle },
 ]
 
-export function AppShell({ children }: PropsWithChildren) {
+type AppShellProps = PropsWithChildren<{
+  user: User
+  logoutPending?: boolean
+  onLogout: () => void
+}>
+
+export function AppShell({ children, user, logoutPending = false, onLogout }: AppShellProps) {
   return (
     <div className="min-h-screen bg-background text-foreground">
       <aside className="fixed inset-y-0 left-0 hidden w-64 border-r bg-sidebar px-3 py-4 lg:block">
@@ -63,10 +72,19 @@ export function AppShell({ children }: PropsWithChildren) {
             <p className="text-xs text-muted-foreground">M1 project scaffold</p>
           </div>
           <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm">
+            <Button className="hidden sm:inline-flex" variant="outline" size="sm">
               Add Host
             </Button>
-            <Button size="sm">Create Project</Button>
+            <Button className="hidden sm:inline-flex" size="sm">
+              Create Project
+            </Button>
+            <div className="ml-2 hidden items-center gap-2 border-l pl-3 sm:flex">
+              <UserCircle className="size-4 text-muted-foreground" aria-hidden="true" />
+              <span className="max-w-40 truncate text-sm">{user.displayName || user.username}</span>
+            </div>
+            <Button variant="ghost" size="icon" onClick={onLogout} disabled={logoutPending} aria-label="Logout">
+              <LogOut aria-hidden="true" />
+            </Button>
           </div>
         </header>
 

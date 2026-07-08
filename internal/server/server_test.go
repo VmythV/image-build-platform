@@ -8,7 +8,10 @@ import (
 )
 
 func TestHealthz(t *testing.T) {
-	router := New(Options{Version: "test"})
+	router, err := New(Options{Version: "test"})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rec := httptest.NewRecorder()
@@ -33,7 +36,10 @@ func TestHealthz(t *testing.T) {
 }
 
 func TestAPIStatus(t *testing.T) {
-	router := New(Options{Version: "test"})
+	router, err := New(Options{Version: "test"})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/status", nil)
 	rec := httptest.NewRecorder()

@@ -6,6 +6,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -172,6 +173,15 @@ func validate(cfg Config) error {
 	}
 	if cfg.Build.MaxGlobalConcurrency < 1 {
 		return errors.New("build.max_global_concurrency must be at least 1")
+	}
+	if strings.TrimSpace(cfg.Security.SessionTTL) != "" {
+		ttl, err := time.ParseDuration(cfg.Security.SessionTTL)
+		if err != nil {
+			return fmt.Errorf("security.session_ttl is invalid: %w", err)
+		}
+		if ttl <= 0 {
+			return errors.New("security.session_ttl must be positive")
+		}
 	}
 	return nil
 }

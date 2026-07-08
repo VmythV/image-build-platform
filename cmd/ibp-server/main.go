@@ -55,12 +55,19 @@ func main() {
 		}
 	}()
 
-	handler := server.New(server.Options{
-		StaticDir: cfg.Server.StaticDir,
-		Version:   version,
-		Logger:    logger,
-		DB:        store.DB,
+	handler, err := server.New(server.Options{
+		StaticDir:    cfg.Server.StaticDir,
+		Version:      version,
+		Logger:       logger,
+		DB:           store.DB,
+		DriverName:   store.DriverName,
+		SessionTTL:   cfg.Security.SessionTTL,
+		SecureCookie: cfg.Security.SecureCookie,
 	})
+	if err != nil {
+		logger.Error("initialize server", "error", err)
+		os.Exit(1)
+	}
 
 	httpServer := &http.Server{
 		Addr:              cfg.Server.Addr,
