@@ -188,6 +188,12 @@ func validate(cfg Config) error {
 	if timeout <= 0 {
 		return errors.New("build.default_timeout must be positive")
 	}
+	if cfg.Logs.RetentionDays < 1 {
+		return errors.New("logs.retention_days must be at least 1")
+	}
+	if cfg.Contexts.RetentionDays < 1 {
+		return errors.New("contexts.retention_days must be at least 1")
+	}
 	if strings.TrimSpace(cfg.Security.SessionTTL) != "" {
 		ttl, err := time.ParseDuration(cfg.Security.SessionTTL)
 		if err != nil {

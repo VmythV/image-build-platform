@@ -44,6 +44,8 @@ type Options struct {
 	LogDir               string
 	DefaultBuildTimeout  time.Duration
 	MaxGlobalConcurrency int
+	LogRetentionDays     int
+	ContextRetentionDays int
 	BuildExecutor        buildtask.Executor
 }
 
@@ -241,6 +243,12 @@ func defaultSettingValues(opts Options) map[string]string {
 	}
 	if minutes := durationMinutes(opts.DefaultBuildTimeout); minutes > 0 {
 		values["build.timeout_minutes"] = strconv.Itoa(minutes)
+	}
+	if opts.LogRetentionDays > 0 {
+		values["retention.log_days"] = strconv.Itoa(opts.LogRetentionDays)
+	}
+	if opts.ContextRetentionDays > 0 {
+		values["retention.context_days"] = strconv.Itoa(opts.ContextRetentionDays)
 	}
 	return values
 }

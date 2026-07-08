@@ -12,7 +12,9 @@ import (
 	"time"
 
 	"github.com/VmythV/image-build-platform/internal/config"
+	"github.com/VmythV/image-build-platform/internal/retention"
 	"github.com/VmythV/image-build-platform/internal/server"
+	systemsettings "github.com/VmythV/image-build-platform/internal/settings"
 	"github.com/VmythV/image-build-platform/internal/storage"
 )
 
@@ -75,11 +77,26 @@ func main() {
 		LogDir:               cfg.Storage.LogDir,
 		DefaultBuildTimeout:  defaultBuildTimeout,
 		MaxGlobalConcurrency: cfg.Build.MaxGlobalConcurrency,
+		LogRetentionDays:     cfg.Logs.RetentionDays,
+		ContextRetentionDays: cfg.Contexts.RetentionDays,
 	})
 	if err != nil {
 		logger.Error("initialize server", "error", err)
 		os.Exit(1)
 	}
+
+	runtimeCtx, runtimeCancel := context.WithCancel(context.Background())
+	defer runtimeCancel()
+
+	retentionCleaner := retention.Cleaner{
+		LogDir:                      cfg.Storage.LogDir,
+		ContextDir:                  cfg.Storage.ContextDir,
+		DefaultLogRetentionDays:     cfg.Logs.RetentionDays,
+		DefaultContextRetentionDays: cfg.Contexts.RetentionDays,
+		Settings:                    systemsettings.NewRepository(store.DB, store.DriverName),
+		Logger:                      logger,
+	}
+	go retentionCleaner.Run(runtimeCtx, 24*time.Hour)
 
 	httpServer := &http.Server{
 		Addr:              cfg.Server.Addr,
@@ -98,6 +115,8 @@ func main() {
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 	<-stop
+
+	runtimeCancel()
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
