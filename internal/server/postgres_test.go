@@ -64,7 +64,7 @@ func TestPostgresSmoke(t *testing.T) {
 	postJSON(t, router, "/api/v1/registries", `{"name":"Push Registry","type":"generic","endpoint":"registry.example.com","namespace":"platform","allowPull":true,"allowPush":true,"isDefaultPull":false,"isDefaultPush":true,"tlsVerify":true,"insecureHttp":false}`, sessionCookie, http.StatusCreated, nil)
 
 	var projectID string
-	postJSON(t, router, "/api/v1/image-projects", `{"name":"Postgres Runtime","imageType":"test","imageName":"postgres-runtime","namespace":"platform","rootImageRef":"alpine:3.20","rootImageSource":"external_image","defaultArchitecture":"amd64","labels":["postgres"],"description":"Postgres smoke project."}`, sessionCookie, http.StatusCreated, func(rec *httptest.ResponseRecorder) {
+	postJSON(t, router, "/api/v1/image-projects", `{"name":"Postgres Runtime","imageType":"other","imageName":"postgres-runtime","namespace":"platform","rootImageRef":"alpine:3.20","rootImageSource":"external_image","defaultArchitecture":"amd64","labels":["postgres"],"description":"Postgres smoke project."}`, sessionCookie, http.StatusCreated, func(rec *httptest.ResponseRecorder) {
 		body := decodeJSONBody(t, rec)
 		data := body["data"].(map[string]any)
 		projectID = data["id"].(string)
