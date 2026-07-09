@@ -48,6 +48,11 @@ func main() {
 		logger.Error("parse build timeout", "error", err)
 		os.Exit(1)
 	}
+	schedulerInterval, err := time.ParseDuration(cfg.Build.SchedulerInterval)
+	if err != nil {
+		logger.Error("parse scheduler interval", "error", err)
+		os.Exit(1)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -63,6 +68,9 @@ func main() {
 		}
 	}()
 
+	runtimeCtx, runtimeCancel := context.WithCancel(context.Background())
+	defer runtimeCancel()
+
 	handler, err := server.New(server.Options{
 		StaticDir:            cfg.Server.StaticDir,
 		Version:              version,
@@ -77,16 +85,16 @@ func main() {
 		LogDir:               cfg.Storage.LogDir,
 		DefaultBuildTimeout:  defaultBuildTimeout,
 		MaxGlobalConcurrency: cfg.Build.MaxGlobalConcurrency,
+		SchedulerEnabled:     cfg.Build.SchedulerEnabled,
+		SchedulerInterval:    schedulerInterval,
 		LogRetentionDays:     cfg.Logs.RetentionDays,
 		ContextRetentionDays: cfg.Contexts.RetentionDays,
+		RuntimeContext:       runtimeCtx,
 	})
 	if err != nil {
 		logger.Error("initialize server", "error", err)
 		os.Exit(1)
 	}
-
-	runtimeCtx, runtimeCancel := context.WithCancel(context.Background())
-	defer runtimeCancel()
 
 	retentionCleaner := retention.Cleaner{
 		LogDir:                      cfg.Storage.LogDir,

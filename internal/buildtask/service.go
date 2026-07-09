@@ -2,6 +2,7 @@ package buildtask
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -13,7 +14,6 @@ import (
 	"time"
 
 	"github.com/VmythV/image-build-platform/internal/buildhost"
-	"github.com/VmythV/image-build-platform/internal/imageartifact"
 	"github.com/VmythV/image-build-platform/internal/imageproject"
 	"github.com/VmythV/image-build-platform/internal/platform/clock"
 	"github.com/VmythV/image-build-platform/internal/platform/id"
@@ -26,6 +26,11 @@ var (
 	ErrInvalidState      = errors.New("build task state transition is invalid")
 	ErrNoSchedulableHost = errors.New("no schedulable build host")
 	ErrLogsNotFound      = errors.New("build task logs not found")
+)
+
+const (
+	buildOptionPullRegistryID = "pullRegistryId"
+	buildOptionContextFiles   = "contextFiles"
 )
 
 type Service struct {
@@ -85,7 +90,40 @@ type RegistrySecretProvider interface {
 }
 
 type ArtifactRecorder interface {
-	RecordPushed(ctx context.Context, artifact imageartifact.Artifact, event imageartifact.PushEvent) error
+	RecordPushed(ctx context.Context, artifact ArtifactRecord, event ArtifactPushEventRecord) error
+}
+
+type ArtifactRecord struct {
+	ID            string
+	BuildTaskID   string
+	ProjectID     string
+	VersionNodeID string
+	RegistryID    string
+	ImageRef      string
+	ImageID       string
+	Digest        string
+	Tag           string
+	Architecture  string
+	SizeBytes     *int64
+	Status        string
+	Pushed        bool
+	PushedAt      *time.Time
+	Deprecated    bool
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+}
+
+type ArtifactPushEventRecord struct {
+	ID           string
+	ArtifactID   string
+	BuildTaskID  string
+	RegistryID   string
+	Status       string
+	ErrorMessage string
+	StartedAt    time.Time
+	FinishedAt   *time.Time
+	CreatedBy    string
+	CreatedAt    time.Time
 }
 
 func NewServiceWithOptions(opts ServiceOptions) Service {
@@ -273,6 +311,66 @@ func (s Service) Start(ctx context.Context, taskID string) (BuildTask, error) {
 	return started, nil
 }
 
+func (s Service) RunScheduler(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		interval = 2 * time.Second
+	}
+	s.scheduleOnce(ctx)
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.scheduleOnce(ctx)
+		}
+	}
+}
+
+func (s Service) scheduleOnce(ctx context.Context) {
+	if err := s.startDispatchingTasks(ctx); err != nil && ctx.Err() == nil {
+		s.logger.Warn("start dispatching build tasks", "error", err)
+	}
+
+	limit := s.effectiveGlobalConcurrency(ctx)
+	if limit < 1 {
+		limit = 1
+	}
+	for i := 0; i < limit; i++ {
+		task, dispatched, reason, err := s.DispatchNext(ctx)
+		if err != nil {
+			if ctx.Err() == nil && !errors.Is(err, ErrNoQueuedTask) {
+				s.logger.Warn("auto dispatch next build task", "error", err)
+			}
+			return
+		}
+		if !dispatched {
+			if reason != "" && ctx.Err() == nil {
+				s.logger.Debug("auto dispatch skipped", "task_id", task.ID, "reason", reason)
+			}
+			return
+		}
+		if _, err := s.Start(ctx, task.ID); err != nil && ctx.Err() == nil {
+			s.logger.Warn("auto start build task", "task_id", task.ID, "error", err)
+			return
+		}
+	}
+}
+
+func (s Service) startDispatchingTasks(ctx context.Context) error {
+	tasks, _, err := s.repo.List(ctx, ListFilter{Status: StatusDispatching, PageSize: 100})
+	if err != nil {
+		return err
+	}
+	for _, task := range tasks {
+		if _, err := s.Start(ctx, task.ID); err != nil {
+			return fmt.Errorf("start dispatching task %s: %w", task.ID, err)
+		}
+	}
+	return nil
+}
+
 func (s Service) ReadLogs(ctx context.Context, taskID string) (string, string, error) {
 	_, logPath, filename, err := s.LogFile(ctx, taskID)
 	if err != nil {
@@ -330,7 +428,12 @@ func (s Service) runBuild(taskID string) {
 		return
 	}
 	contextPath := filepath.Join(s.contextDir, task.ID)
-	err = s.executor.Build(runCtx, task, host, contextPath, task.LogPath)
+	pullRegistry, pullSecret, err := s.pullRegistryForBuild(dbCtx, task)
+	if err != nil {
+		s.completeBuild(dbCtx, task.ID, err)
+		return
+	}
+	err = s.executor.Build(runCtx, task, host, contextPath, task.LogPath, pullRegistry, pullSecret)
 	if err != nil {
 		if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
 			s.timeoutTask(dbCtx, task.ID)
@@ -340,6 +443,37 @@ func (s Service) runBuild(taskID string) {
 		return
 	}
 	s.pushBuild(runCtx, dbCtx, task, host)
+}
+
+func (s Service) pullRegistryForBuild(ctx context.Context, task BuildTask) (*registry.Registry, *registry.RegistrySecret, error) {
+	registryID := strings.TrimSpace(task.BuildOptions[buildOptionPullRegistryID])
+	var pullRegistry registry.Registry
+	var err error
+	if registryID != "" {
+		pullRegistry, err = s.registries.FindByID(ctx, registryID)
+	} else {
+		pullRegistry, err = s.registries.FindDefaultPull(ctx)
+		if errors.Is(err, registry.ErrNotFound) {
+			return nil, nil, nil
+		}
+	}
+	if err != nil {
+		return nil, nil, fmt.Errorf("load pull registry: %w", err)
+	}
+	if !pullRegistry.AllowPull {
+		return nil, nil, errors.New("registry does not allow pull")
+	}
+	if pullRegistry.Status == registry.StatusDisabled {
+		return nil, nil, errors.New("pull registry is disabled")
+	}
+	var secret *registry.RegistrySecret
+	if s.secrets != nil {
+		secret, err = s.secrets.Secret(ctx, pullRegistry)
+		if err != nil {
+			return nil, nil, fmt.Errorf("load pull registry credential: %w", err)
+		}
+	}
+	return &pullRegistry, secret, nil
 }
 
 func (s Service) completeBuild(ctx context.Context, taskID string, buildErr error) {
@@ -435,7 +569,7 @@ func (s Service) completePush(ctx context.Context, taskID string, pushErr error)
 func (s Service) recordPushedArtifact(ctx context.Context, task BuildTask, result PushResult, pushStartedAt time.Time) error {
 	now := clock.Now()
 	artifactID := id.New()
-	return s.artifacts.RecordPushed(ctx, imageartifact.Artifact{
+	return s.artifacts.RecordPushed(ctx, ArtifactRecord{
 		ID:            artifactID,
 		BuildTaskID:   task.ID,
 		ProjectID:     task.ProjectID,
@@ -447,17 +581,17 @@ func (s Service) recordPushedArtifact(ctx context.Context, task BuildTask, resul
 		Tag:           task.ImageTag,
 		Architecture:  task.Architecture,
 		SizeBytes:     result.SizeBytes,
-		Status:        imageartifact.StatusAvailable,
+		Status:        "available",
 		Pushed:        true,
 		PushedAt:      &now,
 		CreatedAt:     now,
 		UpdatedAt:     now,
-	}, imageartifact.PushEvent{
+	}, ArtifactPushEventRecord{
 		ID:          id.New(),
 		ArtifactID:  artifactID,
 		BuildTaskID: task.ID,
 		RegistryID:  task.RegistryID,
-		Status:      imageartifact.PushStatusSuccess,
+		Status:      "success",
 		StartedAt:   pushStartedAt,
 		FinishedAt:  &now,
 		CreatedBy:   task.CreatedBy,
@@ -593,6 +727,24 @@ func (s Service) normalizeCreateInput(ctx context.Context, input CreateInput) (n
 		return normalizedCreateInput{}, err
 	}
 	buildOptions := normalizeBuildOptions(input.BuildOptions)
+	pullRegistryID, err := s.normalizePullRegistryID(ctx, input.PullRegistryID)
+	if err != nil {
+		return normalizedCreateInput{}, err
+	}
+	if pullRegistryID != "" {
+		buildOptions[buildOptionPullRegistryID] = pullRegistryID
+	}
+	contextFiles, err := normalizeContextFiles(input.ContextFiles)
+	if err != nil {
+		return normalizedCreateInput{}, err
+	}
+	if len(contextFiles) > 0 {
+		data, err := json.Marshal(contextFiles)
+		if err != nil {
+			return normalizedCreateInput{}, fmt.Errorf("encode context files: %w", err)
+		}
+		buildOptions[buildOptionContextFiles] = string(data)
+	}
 
 	return normalizedCreateInput{
 		project:         project,
@@ -606,6 +758,38 @@ func (s Service) normalizeCreateInput(ctx context.Context, input CreateInput) (n
 		buildArgs:       buildArgs,
 		buildOptions:    buildOptions,
 	}, nil
+}
+
+func (s Service) normalizePullRegistryID(ctx context.Context, requestedID string) (string, error) {
+	requestedID = strings.TrimSpace(requestedID)
+	if requestedID == "" {
+		pullRegistry, err := s.registries.FindDefaultPull(ctx)
+		if errors.Is(err, registry.ErrNotFound) {
+			return "", nil
+		}
+		if err != nil {
+			return "", err
+		}
+		return pullRegistry.ID, validatePullRegistry(pullRegistry)
+	}
+	pullRegistry, err := s.registries.FindByID(ctx, requestedID)
+	if err != nil {
+		if errors.Is(err, registry.ErrNotFound) {
+			return "", validationError("pullRegistryId was not found")
+		}
+		return "", err
+	}
+	return pullRegistry.ID, validatePullRegistry(pullRegistry)
+}
+
+func validatePullRegistry(pullRegistry registry.Registry) error {
+	if !pullRegistry.AllowPull {
+		return validationError("pull registry must allow pull")
+	}
+	if pullRegistry.Status == registry.StatusDisabled {
+		return validationError("pull registry is disabled")
+	}
+	return nil
 }
 
 func (s Service) resolveRegistry(ctx context.Context, requestedID string, projectDefaultID string) (registry.Registry, error) {
@@ -676,6 +860,51 @@ func normalizeBuildOptions(input map[string]string) map[string]string {
 		}
 	}
 	return result
+}
+
+func normalizeContextFiles(input []ContextFileInput) ([]ContextFileInput, error) {
+	if len(input) > 64 {
+		return nil, validationError("contextFiles can contain at most 64 files")
+	}
+	result := make([]ContextFileInput, 0, len(input))
+	seen := make(map[string]struct{}, len(input))
+	for _, file := range input {
+		path, err := cleanContextFilePath(file.Path)
+		if err != nil {
+			return nil, err
+		}
+		if path == "" && strings.TrimSpace(file.Content) == "" {
+			continue
+		}
+		if path == "" {
+			return nil, validationError("contextFiles path is required")
+		}
+		if len(file.Content) > 1024*1024 {
+			return nil, validationError("contextFiles content must be 1 MiB or smaller")
+		}
+		if _, ok := seen[path]; ok {
+			return nil, validationError("contextFiles contains duplicate path " + path)
+		}
+		seen[path] = struct{}{}
+		result = append(result, ContextFileInput{Path: path, Content: file.Content})
+	}
+	return result, nil
+}
+
+func cleanContextFilePath(value string) (string, error) {
+	value = strings.ReplaceAll(strings.TrimSpace(value), "\\", "/")
+	path := filepath.Clean(value)
+	if path == "." || path == "" {
+		return "", nil
+	}
+	if filepath.IsAbs(path) || path == ".." || strings.HasPrefix(path, ".."+string(os.PathSeparator)) {
+		return "", validationError("contextFiles path must be relative and stay inside the build context")
+	}
+	base := strings.ToLower(filepath.Base(path))
+	if base == "dockerfile" || path == "metadata.json" {
+		return "", validationError("contextFiles cannot overwrite reserved build context files")
+	}
+	return filepath.ToSlash(path), nil
 }
 
 func retryableStatus(status string) bool {

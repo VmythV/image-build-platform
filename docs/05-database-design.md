@@ -774,6 +774,8 @@ platform.public_url
 build.max_global_concurrency
 build.default_timeout_seconds
 build.enable_buildkit
+build.scheduler_enabled
+build.scheduler_interval
 logs.retention_days
 contexts.retention_days
 security.session_ttl_seconds
@@ -853,4 +855,3 @@ MVP 默认：
 2. Go 数据库访问层使用 `database/sql` + sqlc，还是 `database/sql` + 手写 repository。
 3. SQLite 时间字段使用 TEXT ISO 字符串还是 DATETIME。
 4. PostgreSQL 是否作为 MVP 自动化测试的一部分。
-

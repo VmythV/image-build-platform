@@ -1,4 +1,4 @@
-import { apiFetch, apiFetchText } from "@/lib/api"
+import { apiFetch, apiFetchText, apiURL } from "@/lib/api"
 
 export type BuildTaskStatus =
   | "created"
@@ -59,12 +59,14 @@ export type CreateBuildTaskInput = {
   projectId: string
   versionNodeId: string
   registryId?: string
+  pullRegistryId?: string
   requestedHostId?: string
   imageName?: string
   imageTag?: string
   architecture?: string
   buildArgs?: Record<string, string>
   buildOptions?: Record<string, string>
+  contextFiles?: Array<{ path: string; content: string }>
 }
 
 export type DispatchResult = {
@@ -116,4 +118,8 @@ export async function retryBuildTask(id: string): Promise<BuildTask> {
 
 export async function getBuildTaskLogs(id: string): Promise<string> {
   return apiFetchText(`/api/v1/build-tasks/${id}/logs`)
+}
+
+export function buildTaskLogsDownloadURL(id: string): string {
+  return apiURL(`/api/v1/build-tasks/${id}/logs/download`)
 }

@@ -1,10 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { ArchiveX, GitBranch, Loader2, Play, Radio, RotateCcw, ScrollText, Server, XCircle } from "lucide-react"
-import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { ArchiveX, ArrowDownToLine, Download, GitBranch, Loader2, Pause, Play, Radio, RotateCcw, ScrollText, Search, Server, XCircle } from "lucide-react"
+import { type ReactNode, type RefObject, useCallback, useEffect, useMemo, useRef, useState } from "react"
 
 import { Button } from "@/components/ui/button"
 import { apiURL } from "@/lib/api"
 import {
+  buildTaskLogsDownloadURL,
   cancelBuildTask,
   dispatchBuildTask,
   dispatchNextBuildTask,
@@ -34,9 +35,19 @@ export function BuildTasksPage() {
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null)
   const [logText, setLogText] = useState("")
   const [logError, setLogError] = useState("")
+  const [logFilter, setLogFilter] = useState("")
+  const [autoScroll, setAutoScroll] = useState(true)
+  const [streamPaused, setStreamPaused] = useState(false)
+  const [streamStatus, setStreamStatus] = useState("")
   const [streamingTaskId, setStreamingTaskId] = useState<string | null>(null)
   const [streamConnected, setStreamConnected] = useState(false)
   const logStreamRef = useRef<EventSource | null>(null)
+  const logOffsetRef = useRef(0)
+  const logPreRef = useRef<HTMLPreElement | null>(null)
+  const pausedChunksRef = useRef<string[]>([])
+  const streamPausedRef = useRef(false)
+  const reconnectTimerRef = useRef<number | null>(null)
+  const reconnectAttemptsRef = useRef(0)
 
   const tasksQuery = useQuery({
     queryKey: ["build-tasks"],
@@ -46,70 +57,131 @@ export function BuildTasksPage() {
 
   const tasks = tasksQuery.data ?? []
   const selectedTask = useMemo(() => tasks.find((task) => task.id === selectedTaskId) ?? tasks[0] ?? null, [selectedTaskId, tasks])
+  const visibleLogText = useMemo(() => filterLogText(logText, logFilter), [logFilter, logText])
 
   const invalidateTasks = useCallback(() => queryClient.invalidateQueries({ queryKey: ["build-tasks"] }), [queryClient])
 
+  const clearReconnectTimer = useCallback(() => {
+    if (reconnectTimerRef.current !== null) {
+      window.clearTimeout(reconnectTimerRef.current)
+      reconnectTimerRef.current = null
+    }
+  }, [])
+
   const stopLogStream = useCallback(() => {
+    clearReconnectTimer()
     logStreamRef.current?.close()
     logStreamRef.current = null
     setStreamingTaskId(null)
     setStreamConnected(false)
-  }, [])
+    setStreamStatus("")
+    reconnectAttemptsRef.current = 0
+  }, [clearReconnectTimer])
 
   const startLogStream = useCallback(
     (task: BuildTask) => {
       stopLogStream()
       setLogText("")
       setLogError("")
+      setStreamStatus("Connecting to log stream.")
+      setStreamPaused(false)
       setStreamingTaskId(task.id)
       setStreamConnected(false)
+      logOffsetRef.current = 0
+      reconnectAttemptsRef.current = 0
+      pausedChunksRef.current = []
 
-      const source = new EventSource(apiURL(`/api/v1/build-tasks/${task.id}/logs/stream`), { withCredentials: true })
-      logStreamRef.current = source
+      const connect = (resume: boolean) => {
+        clearReconnectTimer()
+        const offset = resume ? logOffsetRef.current : 0
+        const path = offset > 0 ? `/api/v1/build-tasks/${task.id}/logs/stream?offset=${offset}` : `/api/v1/build-tasks/${task.id}/logs/stream`
+        const source = new EventSource(apiURL(path), { withCredentials: true })
+        logStreamRef.current = source
 
-      source.onopen = () => {
-        if (logStreamRef.current === source) {
-          setStreamConnected(true)
+        source.onopen = () => {
+          if (logStreamRef.current === source) {
+            setStreamConnected(true)
+            reconnectAttemptsRef.current = 0
+            setStreamStatus(resume ? "Log stream reconnected." : "Log stream connected.")
+          }
+        }
+
+        source.addEventListener("log", (event) => {
+          if (logStreamRef.current !== source) {
+            return
+          }
+          const message = event as MessageEvent<string>
+          const chunk = parseLogChunk(message.data)
+          logOffsetRef.current = chunk.nextOffset ?? logOffsetRef.current + byteLength(chunk.text)
+          if (streamPausedRef.current) {
+            pausedChunksRef.current.push(chunk.text)
+            setStreamStatus(`${pausedChunksRef.current.length} buffered log chunks.`)
+            return
+          }
+          setLogText((current) => appendLogChunk(current, chunk.text))
+        })
+
+        source.addEventListener("done", (event) => {
+          if (logStreamRef.current !== source) {
+            return
+          }
+          const message = event as MessageEvent<string>
+          source.close()
+          clearReconnectTimer()
+          logStreamRef.current = null
+          setStreamingTaskId(null)
+          setStreamConnected(false)
+          setStreamStatus("")
+          setLogError("")
+          setLogText((current) => appendLogChunk(current, `\nBuild finished with status: ${message.data}\n`))
+          void invalidateTasks()
+        })
+
+        source.onerror = () => {
+          if (logStreamRef.current !== source) {
+            return
+          }
+          source.close()
+          logStreamRef.current = null
+          setStreamConnected(false)
+          reconnectAttemptsRef.current += 1
+          if (reconnectAttemptsRef.current > 5) {
+            setStreamingTaskId(null)
+            setStreamStatus("")
+            setLogError("Log stream disconnected and could not reconnect.")
+            return
+          }
+          setStreamStatus(`Log stream disconnected. Reconnecting (${reconnectAttemptsRef.current}/5).`)
+          reconnectTimerRef.current = window.setTimeout(() => connect(true), 1200)
         }
       }
-      source.addEventListener("log", (event) => {
-        if (logStreamRef.current !== source) {
-          return
-        }
-        const message = event as MessageEvent<string>
-        setLogText((current) => appendLogChunk(current, message.data))
-      })
-      source.addEventListener("done", (event) => {
-        if (logStreamRef.current !== source) {
-          return
-        }
-        const message = event as MessageEvent<string>
-        source.close()
-        logStreamRef.current = null
-        setStreamingTaskId(null)
-        setStreamConnected(false)
-        setLogError("")
-        setLogText((current) => appendLogChunk(current, `Build finished with status: ${message.data}`))
-        void invalidateTasks()
-      })
-      source.onerror = () => {
-        if (logStreamRef.current !== source) {
-          return
-        }
-        source.close()
-        logStreamRef.current = null
-        setStreamingTaskId(null)
-        setStreamConnected(false)
-        setLogError("Log stream disconnected or unavailable.")
-      }
+
+      connect(false)
     },
-    [invalidateTasks, stopLogStream],
+    [clearReconnectTimer, invalidateTasks, stopLogStream],
   )
 
   useEffect(() => {
     setLogText("")
     setLogError("")
+    setLogFilter("")
   }, [selectedTask?.id])
+
+  useEffect(() => {
+    streamPausedRef.current = streamPaused
+    if (!streamPaused && pausedChunksRef.current.length > 0) {
+      const pendingText = pausedChunksRef.current.join("")
+      pausedChunksRef.current = []
+      setStreamStatus(streamConnected ? "Log stream connected." : "")
+      setLogText((current) => appendLogChunk(current, pendingText))
+    }
+  }, [streamConnected, streamPaused])
+
+  useEffect(() => {
+    if (autoScroll && logPreRef.current) {
+      logPreRef.current.scrollTop = logPreRef.current.scrollHeight
+    }
+  }, [autoScroll, visibleLogText])
 
   useEffect(() => {
     if (streamingTaskId && selectedTask?.id !== streamingTaskId) {
@@ -232,7 +304,12 @@ export function BuildTasksPage() {
       <TaskDetail
         task={selectedTask}
         logText={logText}
+        visibleLogText={visibleLogText}
         logError={logError}
+        logFilter={logFilter}
+        autoScroll={autoScroll}
+        streamPaused={streamPaused}
+        streamStatus={streamStatus}
         dispatchPending={dispatchMutation.isPending}
         startPending={startMutation.isPending}
         cancelPending={cancelMutation.isPending}
@@ -247,6 +324,10 @@ export function BuildTasksPage() {
         onLoadLogs={(task) => logsMutation.mutate(task.id)}
         onStreamLogs={startLogStream}
         onStopLogs={stopLogStream}
+        onLogFilterChange={setLogFilter}
+        onAutoScrollChange={setAutoScroll}
+        onStreamPausedChange={setStreamPaused}
+        logPreRef={logPreRef}
       />
     </div>
   )
@@ -255,7 +336,12 @@ export function BuildTasksPage() {
 function TaskDetail({
   task,
   logText,
+  visibleLogText,
   logError,
+  logFilter,
+  autoScroll,
+  streamPaused,
+  streamStatus,
   dispatchPending,
   startPending,
   cancelPending,
@@ -270,10 +356,19 @@ function TaskDetail({
   onLoadLogs,
   onStreamLogs,
   onStopLogs,
+  onLogFilterChange,
+  onAutoScrollChange,
+  onStreamPausedChange,
+  logPreRef,
 }: {
   task: BuildTask | null
   logText: string
+  visibleLogText: string
   logError: string
+  logFilter: string
+  autoScroll: boolean
+  streamPaused: boolean
+  streamStatus: string
   dispatchPending: boolean
   startPending: boolean
   cancelPending: boolean
@@ -288,6 +383,10 @@ function TaskDetail({
   onLoadLogs: (task: BuildTask) => void
   onStreamLogs: (task: BuildTask) => void
   onStopLogs: () => void
+  onLogFilterChange: (value: string) => void
+  onAutoScrollChange: (value: boolean) => void
+  onStreamPausedChange: (value: boolean) => void
+  logPreRef: RefObject<HTMLPreElement | null>
 }) {
   return (
     <aside className="rounded-lg border bg-card p-4 text-card-foreground">
@@ -329,6 +428,23 @@ function TaskDetail({
               {streaming && !streamConnected ? <Loader2 className="animate-spin" aria-hidden="true" /> : streaming ? <XCircle aria-hidden="true" /> : <Radio aria-hidden="true" />}
               {streaming ? "Stop Stream" : "Stream Logs"}
             </Button>
+            <Button variant="outline" size="sm" onClick={() => onStreamPausedChange(!streamPaused)} disabled={!streaming}>
+              {streamPaused ? <Play aria-hidden="true" /> : <Pause aria-hidden="true" />}
+              {streamPaused ? "Resume" : "Pause"}
+            </Button>
+            {task.logPath ? (
+              <Button variant="outline" size="sm" asChild>
+                <a href={buildTaskLogsDownloadURL(task.id)}>
+                  <Download aria-hidden="true" />
+                  Download
+                </a>
+              </Button>
+            ) : (
+              <Button variant="outline" size="sm" disabled>
+                <Download aria-hidden="true" />
+                Download
+              </Button>
+            )}
           </div>
 
           <div className="space-y-2 rounded-md border bg-background p-3 text-sm">
@@ -339,13 +455,30 @@ function TaskDetail({
 
           {task.schedulerReason ? <InfoBlock title="Scheduler" detail={task.schedulerReason} /> : null}
           {task.errorMessage ? <InfoBlock title={task.errorCode || "Error"} detail={task.errorMessage} tone="danger" /> : null}
-          {streaming ? <InfoBlock title="Logs" detail={streamConnected ? "Log stream connected." : "Connecting to log stream."} /> : null}
+          {streaming ? <InfoBlock title="Logs" detail={streamStatus || (streamConnected ? "Log stream connected." : "Connecting to log stream.")} /> : null}
           {logError ? <InfoBlock title="Logs" detail={logError} tone="danger" /> : null}
 
           {logText ? (
             <section>
-              <h3 className="mb-2 text-sm font-semibold">Build Logs</h3>
-              <pre className="max-h-[360px] overflow-auto rounded-md border bg-background p-3 text-xs">{logText}</pre>
+              <div className="mb-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <h3 className="text-sm font-semibold">Build Logs</h3>
+                <div className="flex flex-wrap items-center gap-2">
+                  <label className="flex h-9 min-w-[180px] items-center gap-2 rounded-md border bg-background px-2 text-sm">
+                    <Search className="size-4 text-muted-foreground" aria-hidden="true" />
+                    <input
+                      className="min-w-0 flex-1 bg-transparent outline-none"
+                      placeholder="Search logs"
+                      value={logFilter}
+                      onChange={(event) => onLogFilterChange(event.target.value)}
+                    />
+                  </label>
+                  <Button variant={autoScroll ? "default" : "outline"} size="sm" onClick={() => onAutoScrollChange(!autoScroll)}>
+                    <ArrowDownToLine aria-hidden="true" />
+                    Auto
+                  </Button>
+                </div>
+              </div>
+              <pre ref={logPreRef} className="max-h-[360px] overflow-auto rounded-md border bg-background p-3 text-xs">{visibleLogText || "No matching log lines."}</pre>
             </section>
           ) : null}
 
@@ -417,9 +550,45 @@ function appendLogChunk(current: string, chunk: string) {
     return current
   }
   if (!current) {
-    return `${chunk}\n`
+    return chunk
   }
-  return current.endsWith("\n") ? `${current}${chunk}\n` : `${current}\n${chunk}\n`
+  return current.endsWith("\n") || chunk.startsWith("\n") ? `${current}${chunk}` : `${current}\n${chunk}`
+}
+
+function filterLogText(logText: string, keyword: string) {
+  const normalized = keyword.trim().toLowerCase()
+  if (!normalized) {
+    return logText
+  }
+  return logText
+    .split("\n")
+    .filter((line) => line.toLowerCase().includes(normalized))
+    .join("\n")
+}
+
+type ParsedLogChunk = {
+  text: string
+  nextOffset?: number
+}
+
+function parseLogChunk(data: string): ParsedLogChunk {
+  try {
+    const parsed: unknown = JSON.parse(data)
+    if (parsed && typeof parsed === "object" && "text" in parsed) {
+      const chunk = parsed as { text?: unknown; nextOffset?: unknown }
+      return {
+        text: typeof chunk.text === "string" ? chunk.text : "",
+        nextOffset: typeof chunk.nextOffset === "number" ? chunk.nextOffset : undefined,
+      }
+    }
+  } catch {
+    // Older servers emitted raw log text. Keep that path usable.
+  }
+  return { text: data }
+}
+
+function byteLength(value: string) {
+  return new TextEncoder().encode(value).length
 }
 
 function statusClass(status: BuildTaskStatus) {

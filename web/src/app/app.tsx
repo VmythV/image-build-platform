@@ -11,12 +11,16 @@ import { HelpPage } from "@/pages/help/help-page"
 import { ImageProjectsPage } from "@/pages/image-projects/image-projects-page"
 import { RegistriesPage } from "@/pages/registries/registries-page"
 import { SettingsPage } from "@/pages/settings/settings-page"
+import { UsersPage } from "@/pages/users/users-page"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { type ReactNode, useState } from "react"
 
-export type AppView = "dashboard" | "build-hosts" | "registries" | "image-projects" | "build-tasks" | "artifacts" | "settings" | "help"
+import { useI18n } from "@/lib/i18n"
+
+export type AppView = "dashboard" | "build-hosts" | "registries" | "image-projects" | "build-tasks" | "artifacts" | "users" | "settings" | "help"
 
 export function App() {
+  const { t } = useI18n()
   const queryClient = useQueryClient()
   const [activeView, setActiveView] = useState<AppView>("dashboard")
   const setupStatusQuery = useQuery({
@@ -42,17 +46,17 @@ export function App() {
   }
 
   if (setupStatusQuery.isPending) {
-    return <StatusScreen title="正在连接平台" detail="正在检查初始化状态。" />
+    return <StatusScreen title={t("app.connecting.title")} detail={t("app.connecting.detail")} />
   }
 
   if (setupStatusQuery.isError) {
     return (
       <StatusScreen
-        title="无法连接后端服务"
-        detail="请确认服务已经启动，并且前端 API 地址配置正确。"
+        title={t("app.backend_error.title")}
+        detail={t("app.backend_error.detail")}
         action={
           <Button variant="outline" size="sm" onClick={() => void setupStatusQuery.refetch()}>
-            重试
+            {t("app.retry")}
           </Button>
         }
       />
@@ -64,7 +68,7 @@ export function App() {
   }
 
   if (currentUserQuery.isPending) {
-    return <StatusScreen title="正在加载会话" detail="正在读取当前登录用户。" />
+    return <StatusScreen title={t("app.session.title")} detail={t("app.session.detail")} />
   }
 
   if (currentUserQuery.isError) {
@@ -85,6 +89,7 @@ export function App() {
       {activeView === "image-projects" ? <ImageProjectsPage /> : null}
       {activeView === "build-tasks" ? <BuildTasksPage /> : null}
       {activeView === "artifacts" ? <ArtifactsPage /> : null}
+      {activeView === "users" ? <UsersPage currentUser={currentUserQuery.data} /> : null}
       {activeView === "settings" ? <SettingsPage /> : null}
       {activeView === "help" ? <HelpPage /> : null}
     </AppShell>

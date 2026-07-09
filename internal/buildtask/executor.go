@@ -20,8 +20,9 @@ import (
 )
 
 type Executor interface {
-	Build(ctx context.Context, task BuildTask, host buildhost.BuildHost, contextPath string, logPath string) error
+	Build(ctx context.Context, task BuildTask, host buildhost.BuildHost, contextPath string, logPath string, pullRegistry *registry.Registry, pullSecret *registry.RegistrySecret) error
 	Push(ctx context.Context, task BuildTask, host buildhost.BuildHost, pushRegistry registry.Registry, secret *registry.RegistrySecret, logPath string) (PushResult, error)
+	Repush(ctx context.Context, operationID string, sourceImageRef string, targetImageRef string, host buildhost.BuildHost, pushRegistry registry.Registry, secret *registry.RegistrySecret, logPath string) (PushResult, error)
 	Cancel(taskID string) bool
 }
 
@@ -40,7 +41,7 @@ func NewLocalDockerExecutor() *LocalDockerExecutor {
 	return &LocalDockerExecutor{cancels: map[string]context.CancelFunc{}}
 }
 
-func (e *LocalDockerExecutor) Build(ctx context.Context, task BuildTask, host buildhost.BuildHost, contextPath string, logPath string) error {
+func (e *LocalDockerExecutor) Build(ctx context.Context, task BuildTask, host buildhost.BuildHost, contextPath string, logPath string, pullRegistry *registry.Registry, pullSecret *registry.RegistrySecret) error {
 	buildCtx, cancel := context.WithCancel(ctx)
 	e.register(task.ID, cancel)
 	defer e.unregister(task.ID)
@@ -53,18 +54,28 @@ func (e *LocalDockerExecutor) Build(ctx context.Context, task BuildTask, host bu
 
 	switch host.ConnectionType {
 	case buildhost.ConnectionLocalDocker:
-		return e.buildLocal(buildCtx, task, host, contextPath, logFile)
+		return e.buildLocal(buildCtx, task, host, contextPath, pullRegistry, pullSecret, logFile)
 	case buildhost.ConnectionSSH:
-		return e.buildSSH(buildCtx, task, host, contextPath, logFile)
+		return e.buildSSH(buildCtx, task, host, contextPath, pullRegistry, pullSecret, logFile)
 	default:
 		return fmt.Errorf("unsupported build host connection type %q", host.ConnectionType)
 	}
 }
 
-func (e *LocalDockerExecutor) buildLocal(ctx context.Context, task BuildTask, host buildhost.BuildHost, contextPath string, logFile *os.File) error {
+func (e *LocalDockerExecutor) buildLocal(ctx context.Context, task BuildTask, host buildhost.BuildHost, contextPath string, pullRegistry *registry.Registry, pullSecret *registry.RegistrySecret, logFile *os.File) error {
 	dockerCommand := strings.TrimSpace(host.DockerCommand)
 	if dockerCommand == "" {
 		dockerCommand = buildhost.DefaultDockerCommand
+	}
+	env := dockerEnv(host)
+
+	if pullRegistry != nil && pullSecret != nil {
+		if err := runLocalDockerCommand(ctx, dockerCommand, []string{"login", pullRegistry.Endpoint, "--username", pullSecret.Username, "--password-stdin"}, env, strings.NewReader(pullSecret.Password), logFile); err != nil {
+			return fmt.Errorf("docker login for pull registry failed: %w", err)
+		}
+		defer func() {
+			_ = runLocalDockerCommand(context.Background(), dockerCommand, []string{"logout", pullRegistry.Endpoint}, env, nil, logFile)
+		}()
 	}
 
 	buildArgs := dockerBuildArgs(task)
@@ -73,7 +84,7 @@ func (e *LocalDockerExecutor) buildLocal(ctx context.Context, task BuildTask, ho
 	cmd.Dir = contextPath
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
-	cmd.Env = dockerEnv(host)
+	cmd.Env = env
 	if err := cmd.Run(); err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -86,7 +97,7 @@ func (e *LocalDockerExecutor) buildLocal(ctx context.Context, task BuildTask, ho
 	inspectCmd := exec.CommandContext(ctx, dockerCommand, inspectArgs...)
 	inspectCmd.Stdout = logFile
 	inspectCmd.Stderr = logFile
-	inspectCmd.Env = dockerEnv(host)
+	inspectCmd.Env = env
 	if err := inspectCmd.Run(); err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -98,7 +109,7 @@ func (e *LocalDockerExecutor) buildLocal(ctx context.Context, task BuildTask, ho
 	return nil
 }
 
-func (e *LocalDockerExecutor) buildSSH(ctx context.Context, task BuildTask, host buildhost.BuildHost, contextPath string, logFile *os.File) error {
+func (e *LocalDockerExecutor) buildSSH(ctx context.Context, task BuildTask, host buildhost.BuildHost, contextPath string, pullRegistry *registry.Registry, pullSecret *registry.RegistrySecret, logFile *os.File) error {
 	sshHost, cleanup, err := buildhost.PrepareSSHIdentity(host)
 	if err != nil {
 		return err
@@ -121,8 +132,28 @@ func (e *LocalDockerExecutor) buildSSH(ctx context.Context, task BuildTask, host
 	}
 	defer cleanupSSHContext(sshHost, remoteDir, logFile)
 
+	configDir := ""
+	if pullRegistry != nil && pullSecret != nil {
+		configDir = remoteBuildDir(task.ID) + "-docker-config"
+		if err := runSSHCommand(ctx, sshHost, "rm -rf "+shellQuote(configDir)+" && mkdir -p "+shellQuote(configDir), logFile, nil); err != nil {
+			return fmt.Errorf("prepare remote docker config: %w", err)
+		}
+		loginCommand := withDockerConfig(configDir, shellJoin([]string{dockerCommand, "login", pullRegistry.Endpoint, "--username", pullSecret.Username, "--password-stdin"}))
+		if err := runSSHCommand(ctx, sshHost, loginCommand, logFile, strings.NewReader(pullSecret.Password)); err != nil {
+			cleanupSSHContext(sshHost, configDir, logFile)
+			return fmt.Errorf("remote docker login for pull registry failed: %w", err)
+		}
+		defer func() {
+			_ = runSSHCommand(context.Background(), sshHost, withDockerConfig(configDir, shellJoin([]string{dockerCommand, "logout", pullRegistry.Endpoint})), logFile, nil)
+			cleanupSSHContext(sshHost, configDir, logFile)
+		}()
+	}
+
 	buildArgs := dockerBuildArgs(task)
 	buildCommand := "cd " + shellQuote(remoteDir) + " && " + shellJoin(append([]string{dockerCommand}, buildArgs...))
+	if configDir != "" {
+		buildCommand = withDockerConfig(configDir, buildCommand)
+	}
 	if err := runSSHCommand(ctx, sshHost, buildCommand, logFile, nil); err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -162,6 +193,68 @@ func (e *LocalDockerExecutor) Push(ctx context.Context, task BuildTask, host bui
 	default:
 		return PushResult{}, fmt.Errorf("unsupported build host connection type %q", host.ConnectionType)
 	}
+}
+
+func (e *LocalDockerExecutor) Repush(ctx context.Context, operationID string, sourceImageRef string, targetImageRef string, host buildhost.BuildHost, pushRegistry registry.Registry, secret *registry.RegistrySecret, logPath string) (PushResult, error) {
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o640)
+	if err != nil {
+		return PushResult{}, fmt.Errorf("open repush log: %w", err)
+	}
+	defer logFile.Close()
+
+	switch host.ConnectionType {
+	case buildhost.ConnectionLocalDocker:
+		return e.repushLocal(ctx, operationID, sourceImageRef, targetImageRef, host, pushRegistry, secret, logFile)
+	case buildhost.ConnectionSSH:
+		return e.repushSSH(ctx, operationID, sourceImageRef, targetImageRef, host, pushRegistry, secret, logFile)
+	default:
+		return PushResult{}, fmt.Errorf("unsupported build host connection type %q", host.ConnectionType)
+	}
+}
+
+func (e *LocalDockerExecutor) repushLocal(ctx context.Context, operationID string, sourceImageRef string, targetImageRef string, host buildhost.BuildHost, pushRegistry registry.Registry, secret *registry.RegistrySecret, logFile *os.File) (PushResult, error) {
+	dockerCommand := strings.TrimSpace(host.DockerCommand)
+	if dockerCommand == "" {
+		dockerCommand = buildhost.DefaultDockerCommand
+	}
+
+	env := dockerEnv(host)
+	if sourceImageRef != targetImageRef {
+		if err := runLocalDockerCommand(ctx, dockerCommand, []string{"tag", sourceImageRef, targetImageRef}, env, nil, logFile); err != nil {
+			if ctx.Err() != nil {
+				return PushResult{}, ctx.Err()
+			}
+			return PushResult{}, fmt.Errorf("docker tag failed: %w", err)
+		}
+	}
+
+	task := BuildTask{ID: operationID, ImageRef: targetImageRef}
+	return e.pushLocal(ctx, task, host, pushRegistry, secret, logFile)
+}
+
+func (e *LocalDockerExecutor) repushSSH(ctx context.Context, operationID string, sourceImageRef string, targetImageRef string, host buildhost.BuildHost, pushRegistry registry.Registry, secret *registry.RegistrySecret, logFile *os.File) (PushResult, error) {
+	sshHost, cleanup, err := buildhost.PrepareSSHIdentity(host)
+	if err != nil {
+		return PushResult{}, err
+	}
+	defer cleanup()
+
+	dockerCommand := strings.TrimSpace(host.DockerCommand)
+	if dockerCommand == "" {
+		dockerCommand = buildhost.DefaultDockerCommand
+	}
+	if sourceImageRef != targetImageRef {
+		tagCommand := shellJoin([]string{dockerCommand, "tag", sourceImageRef, targetImageRef})
+		if err := runSSHCommand(ctx, sshHost, tagCommand, logFile, nil); err != nil {
+			if ctx.Err() != nil {
+				return PushResult{}, ctx.Err()
+			}
+			return PushResult{}, fmt.Errorf("remote docker tag failed: %w", err)
+		}
+	}
+
+	task := BuildTask{ID: operationID, ImageRef: targetImageRef}
+	return e.pushSSH(ctx, task, sshHost, pushRegistry, secret, logFile)
 }
 
 func (e *LocalDockerExecutor) pushLocal(ctx context.Context, task BuildTask, host buildhost.BuildHost, pushRegistry registry.Registry, secret *registry.RegistrySecret, logFile *os.File) (PushResult, error) {
@@ -526,6 +619,9 @@ func dockerBuildArgs(task BuildTask) []string {
 	}
 	if target := strings.TrimSpace(task.BuildOptions["target"]); target != "" {
 		args = append(args, "--target", target)
+	}
+	if network := strings.TrimSpace(task.BuildOptions["network"]); network != "" {
+		args = append(args, "--network", network)
 	}
 
 	for _, key := range sortedMapKeys(task.BuildArgs) {

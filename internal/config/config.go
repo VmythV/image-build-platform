@@ -52,6 +52,8 @@ type BuildConfig struct {
 	DefaultTimeout       string `yaml:"default_timeout"`
 	MaxGlobalConcurrency int    `yaml:"max_global_concurrency"`
 	EnableBuildkit       bool   `yaml:"enable_buildkit"`
+	SchedulerEnabled     bool   `yaml:"scheduler_enabled"`
+	SchedulerInterval    string `yaml:"scheduler_interval"`
 }
 
 type LogsConfig struct {
@@ -91,6 +93,8 @@ func Default() Config {
 			DefaultTimeout:       "1h",
 			MaxGlobalConcurrency: 2,
 			EnableBuildkit:       true,
+			SchedulerEnabled:     true,
+			SchedulerInterval:    "2s",
 		},
 		Logs: LogsConfig{
 			RetentionDays: 30,
@@ -158,6 +162,8 @@ func applyEnv(cfg *Config) {
 	setString(&cfg.Build.DefaultTimeout, "IBP_BUILD_DEFAULT_TIMEOUT")
 	setInt(&cfg.Build.MaxGlobalConcurrency, "IBP_MAX_GLOBAL_CONCURRENCY")
 	setBool(&cfg.Build.EnableBuildkit, "IBP_BUILD_ENABLE_BUILDKIT")
+	setBool(&cfg.Build.SchedulerEnabled, "IBP_BUILD_SCHEDULER_ENABLED")
+	setString(&cfg.Build.SchedulerInterval, "IBP_BUILD_SCHEDULER_INTERVAL")
 	setInt(&cfg.Logs.RetentionDays, "IBP_LOG_RETENTION_DAYS")
 	setInt(&cfg.Contexts.RetentionDays, "IBP_CONTEXT_RETENTION_DAYS")
 }
@@ -187,6 +193,16 @@ func validate(cfg Config) error {
 	}
 	if timeout <= 0 {
 		return errors.New("build.default_timeout must be positive")
+	}
+	if strings.TrimSpace(cfg.Build.SchedulerInterval) == "" {
+		return errors.New("build.scheduler_interval is required")
+	}
+	schedulerInterval, err := time.ParseDuration(cfg.Build.SchedulerInterval)
+	if err != nil {
+		return fmt.Errorf("build.scheduler_interval is invalid: %w", err)
+	}
+	if schedulerInterval <= 0 {
+		return errors.New("build.scheduler_interval must be positive")
 	}
 	if cfg.Logs.RetentionDays < 1 {
 		return errors.New("logs.retention_days must be at least 1")

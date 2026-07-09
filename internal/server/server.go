@@ -44,9 +44,12 @@ type Options struct {
 	LogDir               string
 	DefaultBuildTimeout  time.Duration
 	MaxGlobalConcurrency int
+	SchedulerEnabled     bool
+	SchedulerInterval    time.Duration
 	LogRetentionDays     int
 	ContextRetentionDays int
 	BuildExecutor        buildtask.Executor
+	RuntimeContext       context.Context
 }
 
 func New(opts Options) (http.Handler, error) {
@@ -87,9 +90,14 @@ func New(opts Options) (http.Handler, error) {
 			return nil, fmt.Errorf("initialize credential encryption: %w", err)
 		}
 		credentialRepo := credential.NewRepository(opts.DB, opts.DriverName)
+		buildExecutor := opts.BuildExecutor
+		if buildExecutor == nil {
+			buildExecutor = buildtask.NewLocalDockerExecutor()
+		}
 
+		buildHostRepo := buildhost.NewRepository(opts.DB, opts.DriverName)
 		buildHostService := buildhost.NewServiceWithOptions(buildhost.ServiceOptions{
-			Repository:  buildhost.NewRepository(opts.DB, opts.DriverName),
+			Repository:  buildHostRepo,
 			Detector:    buildhost.CommandDetector{},
 			Credentials: credentialRepo,
 			Encryptor:   credentialEncryptor,
@@ -106,15 +114,27 @@ func New(opts Options) (http.Handler, error) {
 		auditRepo = audit.NewRepository(opts.DB, opts.DriverName)
 		auditRoutes = audit.NewHandler(auditRepo).Routes()
 
+		registryRepo := registry.NewRepository(opts.DB, opts.DriverName)
 		registryService := registry.NewService(
-			registry.NewRepository(opts.DB, opts.DriverName),
+			registryRepo,
 			credentialRepo,
 			credentialEncryptor,
 			registry.CommandDetector{},
 		)
 		registryRoutes = registry.NewHandler(registryService).Routes()
 		artifactRepo := imageartifact.NewRepository(opts.DB, opts.DriverName)
-		artifactRoutes = imageartifact.NewHandler(artifactRepo).Routes()
+		buildTaskRepo := buildtask.NewRepository(opts.DB, opts.DriverName)
+		artifactService := imageartifact.NewServiceWithOptions(imageartifact.ServiceOptions{
+			Repository:      artifactRepo,
+			Tasks:           buildTaskRepo,
+			Registries:      registryRepo,
+			RegistrySecrets: registryService,
+			Hosts:           buildHostRepo,
+			HostCredentials: buildHostService,
+			Executor:        buildExecutor,
+			LogDir:          opts.LogDir,
+		})
+		artifactRoutes = imageartifact.NewHandler(artifactService).Routes()
 		dashboardRoutes = dashboard.NewHandler(dashboard.NewRepository(opts.DB)).Routes()
 
 		imageProjectService := imageproject.NewService(
@@ -123,21 +143,32 @@ func New(opts Options) (http.Handler, error) {
 		imageProjectRoutes = imageproject.NewHandler(imageProjectService).Routes()
 		dockerfileRoutes = dockerfile.NewHandler(dockerfile.NewService()).Routes()
 		buildTaskService := buildtask.NewServiceWithOptions(buildtask.ServiceOptions{
-			Repository:           buildtask.NewRepository(opts.DB, opts.DriverName),
+			Repository:           buildTaskRepo,
 			Projects:             imageproject.NewRepository(opts.DB, opts.DriverName),
-			Registries:           registry.NewRepository(opts.DB, opts.DriverName),
+			Registries:           registryRepo,
 			RegistrySecrets:      registryService,
-			Artifacts:            artifactRepo,
-			Hosts:                buildhost.NewRepository(opts.DB, opts.DriverName),
+			Artifacts:            artifactRecorder{repo: artifactRepo},
+			Hosts:                buildHostRepo,
 			Settings:             settingsRepo,
 			HostCredentials:      buildHostService,
 			ContextDir:           opts.ContextDir,
 			LogDir:               opts.LogDir,
 			DefaultBuildTimeout:  opts.DefaultBuildTimeout,
 			MaxGlobalConcurrency: opts.MaxGlobalConcurrency,
-			Executor:             opts.BuildExecutor,
+			Executor:             buildExecutor,
 			Logger:               logger,
 		})
+		if opts.SchedulerEnabled {
+			schedulerCtx := opts.RuntimeContext
+			if schedulerCtx == nil {
+				schedulerCtx = context.Background()
+			}
+			interval := opts.SchedulerInterval
+			if interval <= 0 {
+				interval = 2 * time.Second
+			}
+			go buildTaskService.RunScheduler(schedulerCtx, interval)
+		}
 		buildTaskRoutes = buildtask.NewHandler(buildTaskService).Routes()
 	}
 
@@ -225,6 +256,43 @@ func New(opts Options) (http.Handler, error) {
 	}
 
 	return r, nil
+}
+
+type artifactRecorder struct {
+	repo imageartifact.Repository
+}
+
+func (r artifactRecorder) RecordPushed(ctx context.Context, artifact buildtask.ArtifactRecord, event buildtask.ArtifactPushEventRecord) error {
+	return r.repo.RecordPushed(ctx, imageartifact.Artifact{
+		ID:            artifact.ID,
+		BuildTaskID:   artifact.BuildTaskID,
+		ProjectID:     artifact.ProjectID,
+		VersionNodeID: artifact.VersionNodeID,
+		RegistryID:    artifact.RegistryID,
+		ImageRef:      artifact.ImageRef,
+		ImageID:       artifact.ImageID,
+		Digest:        artifact.Digest,
+		Tag:           artifact.Tag,
+		Architecture:  artifact.Architecture,
+		SizeBytes:     artifact.SizeBytes,
+		Status:        artifact.Status,
+		Pushed:        artifact.Pushed,
+		PushedAt:      artifact.PushedAt,
+		Deprecated:    artifact.Deprecated,
+		CreatedAt:     artifact.CreatedAt,
+		UpdatedAt:     artifact.UpdatedAt,
+	}, imageartifact.PushEvent{
+		ID:           event.ID,
+		ArtifactID:   event.ArtifactID,
+		BuildTaskID:  event.BuildTaskID,
+		RegistryID:   event.RegistryID,
+		Status:       event.Status,
+		ErrorMessage: event.ErrorMessage,
+		StartedAt:    event.StartedAt,
+		FinishedAt:   event.FinishedAt,
+		CreatedBy:    event.CreatedBy,
+		CreatedAt:    event.CreatedAt,
+	})
 }
 
 func timeoutExceptLogStreams(timeout time.Duration) func(http.Handler) http.Handler {

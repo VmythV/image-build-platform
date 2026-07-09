@@ -83,18 +83,29 @@ type GeneratorFormState = {
   baseImage: string
   packages: string
   workdir: string
+  copy: string
   expose: string
   cmd: string
+  entrypoint: string
   environment: string
+  args: string
+  labels: string
 }
 
 type BuildFormState = {
   registryId: string
+  pullRegistryId: string
   requestedHostId: string
   architecture: string
   imageName: string
   imageTag: string
   buildArgs: string
+  buildOptions: string
+  buildPull: string
+  noCache: string
+  target: string
+  network: string
+  contextFiles: string
 }
 
 type FlowData = {
@@ -116,18 +127,29 @@ const defaultGeneratorForm: GeneratorFormState = {
   baseImage: "ubuntu:24.04",
   packages: "curl,ca-certificates",
   workdir: "/app",
+  copy: "",
   expose: "8080",
   cmd: "./server",
+  entrypoint: "",
   environment: "APP_ENV=production",
+  args: "",
+  labels: "org.opencontainers.image.source=image-build-platform",
 }
 
 const defaultBuildForm: BuildFormState = {
   registryId: "",
+  pullRegistryId: "",
   requestedHostId: "",
   architecture: "",
   imageName: "",
   imageTag: "",
   buildArgs: "",
+  buildOptions: "",
+  buildPull: "true",
+  noCache: "",
+  target: "",
+  network: "",
+  contextFiles: "",
 }
 
 export function ImageProjectsPage() {
@@ -306,11 +328,14 @@ export function ImageProjectsPage() {
         projectId,
         versionNodeId: nodeId,
         registryId: input.registryId,
+        pullRegistryId: input.pullRegistryId,
         requestedHostId: input.requestedHostId,
         architecture: input.architecture,
         imageName: input.imageName,
         imageTag: input.imageTag,
         buildArgs: parseKeyValues(input.buildArgs),
+        buildOptions: buildOptionsFromForm(input),
+        contextFiles: parseContextFiles(input.contextFiles),
       }),
     onSuccess: (task) => {
       setBuildTaskResult(task)
@@ -961,6 +986,7 @@ function CreateBuildTaskPanel({
   onCreate: () => void
 }) {
   const pushRegistries = registries.filter((registry) => registry.allowPush && registry.status !== "disabled")
+  const pullRegistries = registries.filter((registry) => registry.allowPull && registry.status !== "disabled")
   const schedulableHosts = buildHosts.filter((host) => host.status !== "disabled")
 
   return (
@@ -973,6 +999,16 @@ function CreateBuildTaskPanel({
         <select className={inputClassName} value={form.registryId} onChange={(event) => updateForm(onFormChange, "registryId", event.target.value)}>
           <option value="">Use project/default push registry</option>
           {pushRegistries.map((registry) => (
+            <option key={registry.id} value={registry.id}>
+              {registry.name}
+            </option>
+          ))}
+        </select>
+      </Field>
+      <Field label="Pull Registry">
+        <select className={inputClassName} value={form.pullRegistryId} onChange={(event) => updateForm(onFormChange, "pullRegistryId", event.target.value)}>
+          <option value="">Use default pull registry</option>
+          {pullRegistries.map((registry) => (
             <option key={registry.id} value={registry.id}>
               {registry.name}
             </option>
@@ -1003,6 +1039,35 @@ function CreateBuildTaskPanel({
       </Field>
       <Field label="Build Args">
         <input className={inputClassName} value={form.buildArgs} onChange={(event) => updateForm(onFormChange, "buildArgs", event.target.value)} />
+      </Field>
+      <div className="grid gap-2 sm:grid-cols-2">
+        <label className="flex h-10 items-center gap-2 rounded-md border bg-background px-3 text-sm">
+          <input type="checkbox" checked={form.buildPull === "true"} onChange={(event) => updateForm(onFormChange, "buildPull", event.target.checked ? "true" : "")} />
+          Pull latest base
+        </label>
+        <label className="flex h-10 items-center gap-2 rounded-md border bg-background px-3 text-sm">
+          <input type="checkbox" checked={form.noCache === "true"} onChange={(event) => updateForm(onFormChange, "noCache", event.target.checked ? "true" : "")} />
+          No cache
+        </label>
+      </div>
+      <div className="grid gap-2 sm:grid-cols-2">
+        <Field label="Target Stage">
+          <input className={inputClassName} value={form.target} onChange={(event) => updateForm(onFormChange, "target", event.target.value)} />
+        </Field>
+        <Field label="Network">
+          <input className={inputClassName} value={form.network} onChange={(event) => updateForm(onFormChange, "network", event.target.value)} placeholder="default, host, none" />
+        </Field>
+      </div>
+      <Field label="Build Options">
+        <input className={inputClassName} value={form.buildOptions} onChange={(event) => updateForm(onFormChange, "buildOptions", event.target.value)} placeholder="key=value,key2=value2" />
+      </Field>
+      <Field label="Context Files">
+        <textarea
+          className={textareaClassName}
+          value={form.contextFiles}
+          onChange={(event) => updateForm(onFormChange, "contextFiles", event.target.value)}
+          placeholder='[{"path":"app/config.json","content":"{\"mode\":\"prod\"}"}]'
+        />
       </Field>
       {error ? <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div> : null}
       {result ? <div className="rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-sm text-sky-700">Queued: {result.imageRef}</div> : null}
@@ -1098,11 +1163,23 @@ function CreateVersionPanel({
             <Field label="Workdir">
               <input className={inputClassName} value={generatorForm.workdir} onChange={(event) => updateForm(onGeneratorFormChange, "workdir", event.target.value)} />
             </Field>
+            <Field label="Copy">
+              <input className={inputClassName} value={generatorForm.copy} onChange={(event) => updateForm(onGeneratorFormChange, "copy", event.target.value)} placeholder="src:dest,package.json:/app/package.json" />
+            </Field>
             <Field label="Expose">
               <input className={inputClassName} value={generatorForm.expose} onChange={(event) => updateForm(onGeneratorFormChange, "expose", event.target.value)} />
             </Field>
+            <Field label="ENTRYPOINT">
+              <input className={inputClassName} value={generatorForm.entrypoint} onChange={(event) => updateForm(onGeneratorFormChange, "entrypoint", event.target.value)} />
+            </Field>
             <Field label="CMD">
               <input className={inputClassName} value={generatorForm.cmd} onChange={(event) => updateForm(onGeneratorFormChange, "cmd", event.target.value)} />
+            </Field>
+            <Field label="ARG">
+              <input className={inputClassName} value={generatorForm.args} onChange={(event) => updateForm(onGeneratorFormChange, "args", event.target.value)} placeholder="APP_VERSION=1.0.0" />
+            </Field>
+            <Field label="LABEL">
+              <input className={inputClassName} value={generatorForm.labels} onChange={(event) => updateForm(onGeneratorFormChange, "labels", event.target.value)} />
             </Field>
             <Field label="Environment">
               <input className={inputClassName} value={generatorForm.environment} onChange={(event) => updateForm(onGeneratorFormChange, "environment", event.target.value)} />
@@ -1295,15 +1372,74 @@ function toGenerateInput(form: GeneratorFormState) {
     environment: parseKeyValues(form.environment),
     workdir: form.workdir,
     packages: parseList(form.packages),
-    copy: [],
+    copy: parseCopyRules(form.copy),
     expose: parseList(form.expose)
       .map((value) => Number(value))
       .filter((value) => Number.isFinite(value) && value > 0),
     cmd: parseList(form.cmd),
-    entrypoint: [],
-    args: {},
-    labels: {},
+    entrypoint: parseList(form.entrypoint),
+    args: parseKeyValues(form.args),
+    labels: parseKeyValues(form.labels),
   }
+}
+
+function buildOptionsFromForm(form: BuildFormState) {
+  const options = parseKeyValues(form.buildOptions)
+  if (form.buildPull === "true") {
+    options.pull = "true"
+  }
+  if (form.noCache === "true") {
+    options.noCache = "true"
+  }
+  if (form.target.trim()) {
+    options.target = form.target.trim()
+  }
+  if (form.network.trim()) {
+    options.network = form.network.trim()
+  }
+  return options
+}
+
+function parseCopyRules(value: string) {
+  return parseList(value)
+    .map((item) => {
+      const [source, ...targetParts] = item.split(":")
+      return { source: source?.trim() ?? "", target: targetParts.join(":").trim() }
+    })
+    .filter((rule) => rule.source && rule.target)
+}
+
+function parseContextFiles(value: string) {
+  const trimmed = value.trim()
+  if (!trimmed) {
+    return []
+  }
+  try {
+    const parsed: unknown = JSON.parse(trimmed)
+    if (Array.isArray(parsed)) {
+      return parsed
+        .map((item) => {
+          if (item && typeof item === "object") {
+            const record = item as { path?: unknown; content?: unknown }
+            return {
+              path: typeof record.path === "string" ? record.path : "",
+              content: typeof record.content === "string" ? record.content : "",
+            }
+          }
+          return { path: "", content: "" }
+        })
+        .filter((item) => item.path)
+    }
+  } catch {
+    // Fall back to key=value lines for quick one-file snippets.
+  }
+  return trimmed
+    .split("\n")
+    .map((line) => {
+      const [path, ...contentParts] = line.split("=")
+      return { path: path.trim(), content: contentParts.join("=").trim() }
+    })
+    .filter((item) => item.path)
 }
 
 function parseList(value: string) {

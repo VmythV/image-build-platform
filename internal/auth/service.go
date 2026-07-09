@@ -24,6 +24,23 @@ type Service struct {
 	sessionTTL time.Duration
 }
 
+type CreateUserInput struct {
+	Username    string `json:"username"`
+	Password    string `json:"password"`
+	DisplayName string `json:"displayName"`
+	Role        string `json:"role"`
+}
+
+type UpdateUserInput struct {
+	DisplayName string `json:"displayName"`
+	Role        string `json:"role"`
+	Status      string `json:"status"`
+}
+
+type ResetPasswordInput struct {
+	Password string `json:"password"`
+}
+
 type ServiceOptions struct {
 	Repository Repository
 	SessionTTL string
@@ -54,6 +71,10 @@ func (s Service) IsInitialized(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	return count > 0, nil
+}
+
+func (s Service) ListUsers(ctx context.Context) ([]User, error) {
+	return s.repo.ListUsers(ctx)
 }
 
 func (s Service) InitializeAdmin(ctx context.Context, username string, password string, displayName string) (User, error) {
@@ -99,6 +120,103 @@ func (s Service) InitializeAdmin(ctx context.Context, username string, password 
 	}
 
 	return user, nil
+}
+
+func (s Service) CreateUser(ctx context.Context, input CreateUserInput, actor User) (User, error) {
+	if actor.Role != RoleAdmin {
+		return User{}, ErrForbidden
+	}
+	username := strings.TrimSpace(input.Username)
+	displayName := strings.TrimSpace(input.DisplayName)
+	if username == "" {
+		return User{}, errors.New("username is required")
+	}
+	if displayName == "" {
+		displayName = username
+	}
+	role := normalizeRole(input.Role)
+	if role == "" {
+		return User{}, errors.New("role is invalid")
+	}
+	if err := validatePassword(username, input.Password); err != nil {
+		return User{}, err
+	}
+	hash, err := HashPassword(input.Password)
+	if err != nil {
+		return User{}, err
+	}
+
+	now := clock.Now()
+	user := User{
+		ID:           id.New(),
+		Username:     username,
+		DisplayName:  displayName,
+		PasswordHash: hash,
+		Role:         role,
+		Status:       UserStatusActive,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	if err := s.repo.CreateUser(ctx, user); err != nil {
+		return User{}, err
+	}
+	return user, nil
+}
+
+func (s Service) UpdateUser(ctx context.Context, userID string, input UpdateUserInput, actor User) (User, error) {
+	if actor.Role != RoleAdmin {
+		return User{}, ErrForbidden
+	}
+	user, err := s.repo.FindUserByID(ctx, strings.TrimSpace(userID))
+	if err != nil {
+		return User{}, err
+	}
+
+	role := normalizeRole(input.Role)
+	if role == "" {
+		return User{}, errors.New("role is invalid")
+	}
+	status := normalizeStatus(input.Status)
+	if status == "" {
+		return User{}, errors.New("status is invalid")
+	}
+	if user.ID == actor.ID && (role != RoleAdmin || status != UserStatusActive) {
+		return User{}, ErrForbidden
+	}
+
+	displayName := strings.TrimSpace(input.DisplayName)
+	if displayName == "" {
+		displayName = user.Username
+	}
+	user.DisplayName = displayName
+	user.Role = role
+	user.Status = status
+	user.UpdatedAt = clock.Now()
+	if err := s.repo.UpdateUser(ctx, user); err != nil {
+		return User{}, err
+	}
+	return s.repo.FindUserByID(ctx, user.ID)
+}
+
+func (s Service) ResetPassword(ctx context.Context, userID string, input ResetPasswordInput, actor User) (User, error) {
+	if actor.Role != RoleAdmin {
+		return User{}, ErrForbidden
+	}
+	user, err := s.repo.FindUserByID(ctx, strings.TrimSpace(userID))
+	if err != nil {
+		return User{}, err
+	}
+	if err := validatePassword(user.Username, input.Password); err != nil {
+		return User{}, err
+	}
+	hash, err := HashPassword(input.Password)
+	if err != nil {
+		return User{}, err
+	}
+	if err := s.repo.UpdatePassword(ctx, user.ID, hash, clock.Now()); err != nil {
+		return User{}, err
+	}
+	return s.repo.FindUserByID(ctx, user.ID)
 }
 
 func (s Service) Login(ctx context.Context, username string, password string, userAgent string, ipAddress string) (User, string, time.Time, error) {
@@ -158,4 +276,28 @@ func (s Service) CurrentUser(ctx context.Context, token string) (User, error) {
 	_ = s.repo.TouchSession(ctx, tokenHash, clock.Now())
 
 	return user, nil
+}
+
+func normalizeRole(value string) string {
+	switch strings.TrimSpace(value) {
+	case RoleAdmin:
+		return RoleAdmin
+	case RoleMaintainer:
+		return RoleMaintainer
+	case RoleViewer, "":
+		return RoleViewer
+	default:
+		return ""
+	}
+}
+
+func normalizeStatus(value string) string {
+	switch strings.TrimSpace(value) {
+	case UserStatusActive, "":
+		return UserStatusActive
+	case UserStatusDisabled:
+		return UserStatusDisabled
+	default:
+		return ""
+	}
 }

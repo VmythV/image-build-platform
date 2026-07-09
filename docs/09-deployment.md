@@ -155,6 +155,8 @@ build:
   default_timeout: "1h"
   max_global_concurrency: 2
   enable_buildkit: true
+  scheduler_enabled: true
+  scheduler_interval: "2s"
 
 logs:
   retention_days: 30
@@ -186,6 +188,8 @@ IBP_DATA_DIR
 IBP_LOG_DIR
 IBP_CONTEXT_DIR
 IBP_MAX_GLOBAL_CONCURRENCY
+IBP_BUILD_SCHEDULER_ENABLED
+IBP_BUILD_SCHEDULER_INTERVAL
 ```
 
 Docker 部署建议至少配置：

@@ -1,27 +1,56 @@
-import { useQuery } from "@tanstack/react-query"
-import { CheckCircle2, Copy, Image, Server } from "lucide-react"
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { Archive, CheckCircle2, Copy, Image, Loader2, RefreshCw, Server, TriangleAlert } from "lucide-react"
 import { type ReactNode, useMemo, useState } from "react"
 
 import { Button } from "@/components/ui/button"
-import { listArtifacts, type ImageArtifact } from "@/lib/artifacts-api"
+import { archiveArtifact, deprecateArtifact, getArtifactPullCommand, listArtifacts, repushArtifact, type ImageArtifact } from "@/lib/artifacts-api"
+import { listRegistries } from "@/lib/registries-api"
 import { cn } from "@/lib/utils"
 
 export function ArtifactsPage() {
+  const queryClient = useQueryClient()
   const [copiedArtifactId, setCopiedArtifactId] = useState<string | null>(null)
+  const [selectedRegistries, setSelectedRegistries] = useState<Record<string, string>>({})
+  const [message, setMessage] = useState("")
   const artifactsQuery = useQuery({
     queryKey: ["artifacts"],
     queryFn: listArtifacts,
     refetchInterval: 5000,
   })
+  const registriesQuery = useQuery({
+    queryKey: ["registries"],
+    queryFn: listRegistries,
+  })
 
   const artifacts = artifactsQuery.data ?? []
+  const pushRegistries = (registriesQuery.data ?? []).filter((registry) => registry.allowPush && registry.status !== "disabled")
   const stats = useMemo(() => summarizeArtifacts(artifacts), [artifacts])
 
   async function copyPullCommand(artifact: ImageArtifact) {
-    await navigator.clipboard.writeText(`docker pull ${artifact.imageRef}`)
+    const command = await getArtifactPullCommand(artifact.id)
+    await navigator.clipboard.writeText(command)
     setCopiedArtifactId(artifact.id)
     window.setTimeout(() => setCopiedArtifactId((current) => (current === artifact.id ? null : current)), 1800)
   }
+
+  const repushMutation = useMutation({
+    mutationFn: ({ artifact, registryId }: { artifact: ImageArtifact; registryId: string }) => repushArtifact(artifact.id, registryId),
+    onSuccess: (result) => {
+      setMessage(`Repushed: ${result.artifact.imageRef}`)
+      return queryClient.invalidateQueries({ queryKey: ["artifacts"] })
+    },
+    onError: (error) => {
+      setMessage(error instanceof Error ? error.message : "Failed to repush artifact.")
+    },
+  })
+  const archiveMutation = useMutation({
+    mutationFn: archiveArtifact,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["artifacts"] }),
+  })
+  const deprecateMutation = useMutation({
+    mutationFn: deprecateArtifact,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["artifacts"] }),
+  })
 
   return (
     <div className="space-y-4">
@@ -32,9 +61,12 @@ export function ArtifactsPage() {
       </section>
 
       <section className="rounded-lg border bg-card text-card-foreground">
-        <div className="border-b p-4">
-          <h2 className="text-base font-semibold">Image Artifacts</h2>
-          <p className="mt-1 text-sm text-muted-foreground">Images produced and pushed by build tasks.</p>
+        <div className="flex flex-col gap-2 border-b p-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h2 className="text-base font-semibold">Image Artifacts</h2>
+            <p className="mt-1 text-sm text-muted-foreground">Images produced and pushed by build tasks.</p>
+          </div>
+          {message ? <div className="text-sm text-muted-foreground">{message}</div> : null}
         </div>
 
         {artifactsQuery.isPending ? (
@@ -54,6 +86,7 @@ export function ArtifactsPage() {
                   <th className="px-4 py-3 font-medium">Digest</th>
                   <th className="px-4 py-3 font-medium">Size</th>
                   <th className="px-4 py-3 font-medium">Pushed</th>
+                  <th className="px-4 py-3 font-medium">Repush Target</th>
                   <th className="px-4 py-3 text-right font-medium">Actions</th>
                 </tr>
               </thead>
@@ -79,10 +112,41 @@ export function ArtifactsPage() {
                     <td className="px-4 py-3">{formatBytes(artifact.sizeBytes)}</td>
                     <td className="px-4 py-3 text-muted-foreground">{formatDate(artifact.pushedAt ?? artifact.createdAt)}</td>
                     <td className="px-4 py-3">
-                      <div className="flex justify-end">
+                      <select
+                        className="h-9 w-full rounded-md border bg-background px-2 text-sm outline-none focus:border-ring focus:ring-2 focus:ring-ring/20"
+                        value={selectedRegistries[artifact.id] ?? ""}
+                        onChange={(event) => setSelectedRegistries((current) => ({ ...current, [artifact.id]: event.target.value }))}
+                      >
+                        <option value="">Current registry</option>
+                        {pushRegistries.map((registry) => (
+                          <option key={registry.id} value={registry.id}>
+                            {registry.name}
+                          </option>
+                        ))}
+                      </select>
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="flex flex-wrap justify-end gap-2">
                         <Button variant="outline" size="sm" onClick={() => void copyPullCommand(artifact)}>
                           <Copy aria-hidden="true" />
                           {copiedArtifactId === artifact.id ? "Copied" : "Pull"}
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => repushMutation.mutate({ artifact, registryId: selectedRegistries[artifact.id] ?? "" })}
+                          disabled={repushMutation.isPending || artifact.status === "archived"}
+                        >
+                          {repushMutation.isPending ? <Loader2 className="animate-spin" aria-hidden="true" /> : <RefreshCw aria-hidden="true" />}
+                          Repush
+                        </Button>
+                        <Button variant="outline" size="sm" onClick={() => deprecateMutation.mutate(artifact.id)} disabled={deprecateMutation.isPending || artifact.deprecated}>
+                          <TriangleAlert aria-hidden="true" />
+                          {artifact.deprecated ? "Deprecated" : "Deprecate"}
+                        </Button>
+                        <Button variant="outline" size="sm" onClick={() => archiveMutation.mutate(artifact.id)} disabled={archiveMutation.isPending || artifact.status === "archived"}>
+                          <Archive aria-hidden="true" />
+                          Archive
                         </Button>
                       </div>
                     </td>

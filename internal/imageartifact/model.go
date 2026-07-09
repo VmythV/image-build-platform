@@ -4,6 +4,7 @@ import "time"
 
 const (
 	StatusAvailable = "available"
+	StatusArchived  = "archived"
 
 	PushStatusSuccess = "success"
 	PushStatusFailed  = "failed"
@@ -43,6 +44,33 @@ type PushEvent struct {
 	FinishedAt   *time.Time
 	CreatedBy    string
 	CreatedAt    time.Time
+}
+
+type PushEventDTO struct {
+	ID           string  `json:"id"`
+	ArtifactID   string  `json:"artifactId"`
+	BuildTaskID  *string `json:"buildTaskId"`
+	RegistryID   string  `json:"registryId"`
+	Status       string  `json:"status"`
+	ErrorMessage *string `json:"errorMessage"`
+	StartedAt    string  `json:"startedAt"`
+	FinishedAt   *string `json:"finishedAt"`
+	CreatedBy    *string `json:"createdBy"`
+	CreatedAt    string  `json:"createdAt"`
+}
+
+type RepushInput struct {
+	RegistryID string `json:"registryId"`
+}
+
+type RepushResultDTO struct {
+	Artifact ArtifactDTO  `json:"artifact"`
+	Event    PushEventDTO `json:"event"`
+	LogPath  *string      `json:"logPath"`
+}
+
+type PullCommandDTO struct {
+	Command string `json:"command"`
 }
 
 type ArtifactDTO struct {
@@ -98,6 +126,21 @@ func ToDTO(artifact Artifact) ArtifactDTO {
 		Deprecated:    artifact.Deprecated,
 		CreatedAt:     artifact.CreatedAt.UTC().Format(time.RFC3339),
 		UpdatedAt:     artifact.UpdatedAt.UTC().Format(time.RFC3339),
+	}
+}
+
+func EventToDTO(event PushEvent) PushEventDTO {
+	return PushEventDTO{
+		ID:           event.ID,
+		ArtifactID:   event.ArtifactID,
+		BuildTaskID:  stringPtr(event.BuildTaskID),
+		RegistryID:   event.RegistryID,
+		Status:       event.Status,
+		ErrorMessage: stringPtr(event.ErrorMessage),
+		StartedAt:    event.StartedAt.UTC().Format(time.RFC3339),
+		FinishedAt:   timePtr(event.FinishedAt),
+		CreatedBy:    stringPtr(event.CreatedBy),
+		CreatedAt:    event.CreatedAt.UTC().Format(time.RFC3339),
 	}
 }
 

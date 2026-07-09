@@ -62,6 +62,44 @@ func TestAuthSetupLoginMeLogout(t *testing.T) {
 	getJSON(t, router, http.MethodGet, "/api/v1/auth/me", "", sessionCookie, http.StatusUnauthorized, nil)
 }
 
+func TestUserManagementRequiresAdmin(t *testing.T) {
+	router := newAuthTestRouter(t)
+
+	getJSON(t, router, http.MethodGet, "/api/v1/users", "", nil, http.StatusUnauthorized, nil)
+
+	sessionCookie := initializeAdminAndLogin(t, router)
+	var userID string
+	postJSON(t, router, "/api/v1/users", `{"username":"builder","password":"MaintainerPass123!","displayName":"Builder User","role":"viewer"}`, sessionCookie, http.StatusCreated, func(rec *httptest.ResponseRecorder) {
+		body := decodeJSONBody(t, rec)
+		data := body["data"].(map[string]any)
+		userID = data["id"].(string)
+		if data["username"] != "builder" {
+			t.Fatalf("expected builder user, got %v", data["username"])
+		}
+		if data["role"] != "viewer" {
+			t.Fatalf("expected viewer role, got %v", data["role"])
+		}
+	})
+
+	getJSON(t, router, http.MethodGet, "/api/v1/users", "", sessionCookie, http.StatusOK, func(body map[string]any) {
+		data := body["data"].([]any)
+		if len(data) != 2 {
+			t.Fatalf("expected admin and builder users, got %d", len(data))
+		}
+	})
+
+	getJSONRecorder(t, router, http.MethodPut, "/api/v1/users/"+userID, `{"displayName":"Build Maintainer","role":"maintainer","status":"active"}`, sessionCookie, http.StatusOK, func(rec *httptest.ResponseRecorder) {
+		body := decodeJSONBody(t, rec)
+		data := body["data"].(map[string]any)
+		if data["role"] != "maintainer" {
+			t.Fatalf("expected maintainer role, got %v", data["role"])
+		}
+	})
+
+	postJSON(t, router, "/api/v1/users/"+userID+"/password", `{"password":"ResetPass123!"}`, sessionCookie, http.StatusOK, nil)
+	postJSON(t, router, "/api/v1/auth/login", `{"username":"builder","password":"ResetPass123!"}`, nil, http.StatusOK, nil)
+}
+
 func TestDashboardSummaryRequiresAuth(t *testing.T) {
 	router := newAuthTestRouter(t)
 
@@ -300,6 +338,16 @@ func TestImageProjectsBranchesAndVersionNodes(t *testing.T) {
 			t.Fatalf("expected latest root version, got %v", data["latestVersion"])
 		}
 	})
+	getJSON(t, router, http.MethodGet, "/api/v1/image-projects?keyword=java", "", sessionCookie, http.StatusOK, func(body map[string]any) {
+		data := body["data"].([]any)
+		if len(data) != 1 {
+			t.Fatalf("expected one project from keyword search, got %d", len(data))
+		}
+		project := data[0].(map[string]any)
+		if project["id"] != projectID {
+			t.Fatalf("expected keyword search to return project %s, got %v", projectID, project["id"])
+		}
+	})
 
 	var rootNodeID string
 	var mainBranchID string
@@ -416,7 +464,7 @@ func TestBuildTasksQueueDispatchCancelAndRetry(t *testing.T) {
 
 	sessionCookie := initializeAdminAndLogin(t, router)
 	getJSON(t, router, http.MethodPut, "/api/v1/settings/scheduler.global_concurrency", `{"value":"1"}`, sessionCookie, http.StatusOK, nil)
-	postJSON(t, router, "/api/v1/registries", `{"name":"Push Registry","type":"generic","endpoint":"registry.example.com","namespace":"platform","allowPull":true,"allowPush":true,"isDefaultPull":false,"isDefaultPush":true,"tlsVerify":true,"insecureHttp":false}`, sessionCookie, http.StatusCreated, nil)
+	postJSON(t, router, "/api/v1/registries", `{"name":"Push Registry","type":"generic","endpoint":"registry.example.com","namespace":"platform","username":"robot","password":"registry-secret","allowPull":true,"allowPush":true,"isDefaultPull":true,"isDefaultPush":true,"tlsVerify":true,"insecureHttp":false}`, sessionCookie, http.StatusCreated, nil)
 
 	var projectID string
 	postJSON(t, router, "/api/v1/image-projects", `{"name":"Java Runtime","imageType":"java","imageName":"java-runtime","namespace":"platform","rootImageRef":"eclipse-temurin:17","rootImageSource":"external_image","defaultArchitecture":"amd64","labels":["java"],"description":"Base Java runtime."}`, sessionCookie, http.StatusCreated, func(rec *httptest.ResponseRecorder) {
@@ -433,7 +481,7 @@ func TestBuildTasksQueueDispatchCancelAndRetry(t *testing.T) {
 	})
 
 	var taskID string
-	postJSON(t, router, "/api/v1/build-tasks", `{"projectId":"`+projectID+`","versionNodeId":"`+rootNodeID+`","architecture":"amd64","imageTag":"root","buildArgs":{"APP_ENV":"test"}}`, sessionCookie, http.StatusCreated, func(rec *httptest.ResponseRecorder) {
+	postJSON(t, router, "/api/v1/build-tasks", `{"projectId":"`+projectID+`","versionNodeId":"`+rootNodeID+`","architecture":"amd64","imageTag":"root","buildArgs":{"APP_ENV":"test"},"buildOptions":{"pull":"true","noCache":"true","network":"host"},"contextFiles":[{"path":"app/config.json","content":"{\"mode\":\"test\"}"}]}`, sessionCookie, http.StatusCreated, func(rec *httptest.ResponseRecorder) {
 		body := decodeJSONBody(t, rec)
 		data := body["data"].(map[string]any)
 		taskID = data["id"].(string)
@@ -560,6 +608,9 @@ func TestBuildTasksQueueDispatchCancelAndRetry(t *testing.T) {
 		if !strings.Contains(body, "fake local build completed") {
 			t.Fatalf("expected fake build log, got %q", body)
 		}
+		if !strings.Contains(body, "with pull credential") {
+			t.Fatalf("expected pull registry credential in fake build log, got %q", body)
+		}
 	})
 	getText(t, router, http.MethodGet, "/api/v1/build-tasks/"+retryTaskID+"/logs/stream", sessionCookie, http.StatusOK, func(body string) {
 		if !strings.Contains(body, "event: log") {
@@ -572,17 +623,54 @@ func TestBuildTasksQueueDispatchCancelAndRetry(t *testing.T) {
 			t.Fatalf("expected SSE done event, got %q", body)
 		}
 	})
+	var artifactID string
 	getJSON(t, router, http.MethodGet, "/api/v1/artifacts", "", sessionCookie, http.StatusOK, func(body map[string]any) {
 		data := body["data"].([]any)
 		if len(data) != 1 {
 			t.Fatalf("expected one artifact, got %d", len(data))
 		}
 		artifact := data[0].(map[string]any)
+		artifactID = artifact["id"].(string)
 		if artifact["imageRef"] != "registry.example.com/platform/java-runtime:root" {
 			t.Fatalf("expected artifact image ref, got %v", artifact["imageRef"])
 		}
 		if artifact["digest"] != "sha256:fake-digest" {
 			t.Fatalf("expected fake digest, got %v", artifact["digest"])
+		}
+	})
+	getJSON(t, router, http.MethodGet, "/api/v1/artifacts/"+artifactID+"/pull-command", "", sessionCookie, http.StatusOK, func(body map[string]any) {
+		data := body["data"].(map[string]any)
+		if data["command"] != "docker pull registry.example.com/platform/java-runtime:root" {
+			t.Fatalf("expected pull command, got %v", data["command"])
+		}
+	})
+	postJSON(t, router, "/api/v1/artifacts/"+artifactID+"/repush", `{"registryId":""}`, sessionCookie, http.StatusCreated, func(rec *httptest.ResponseRecorder) {
+		body := decodeJSONBody(t, rec)
+		data := body["data"].(map[string]any)
+		artifact := data["artifact"].(map[string]any)
+		if artifact["digest"] != "sha256:fake-repush-digest" {
+			t.Fatalf("expected repush digest, got %v", artifact["digest"])
+		}
+		if artifact["imageRef"] != "registry.example.com/platform/java-runtime:root" {
+			t.Fatalf("expected repush image ref, got %v", artifact["imageRef"])
+		}
+		event := data["event"].(map[string]any)
+		if event["status"] != "success" {
+			t.Fatalf("expected repush event success, got %v", event["status"])
+		}
+	})
+	postJSON(t, router, "/api/v1/artifacts/"+artifactID+"/deprecate", "", sessionCookie, http.StatusOK, func(rec *httptest.ResponseRecorder) {
+		body := decodeJSONBody(t, rec)
+		data := body["data"].(map[string]any)
+		if data["deprecated"] != true {
+			t.Fatalf("expected deprecated artifact")
+		}
+	})
+	postJSON(t, router, "/api/v1/artifacts/"+artifactID+"/archive", "", sessionCookie, http.StatusOK, func(rec *httptest.ResponseRecorder) {
+		body := decodeJSONBody(t, rec)
+		data := body["data"].(map[string]any)
+		if data["status"] != "archived" {
+			t.Fatalf("expected archived artifact, got %v", data["status"])
 		}
 	})
 }
@@ -649,12 +737,68 @@ func TestBuildTasksCanRunOnSSHHost(t *testing.T) {
 	})
 }
 
+func TestBuildTaskSchedulerRunsQueuedTasks(t *testing.T) {
+	router := newAuthTestRouterWithScheduler(t)
+	sessionCookie := initializeAdminAndLogin(t, router)
+
+	postJSON(t, router, "/api/v1/registries", `{"name":"Push Registry","type":"generic","endpoint":"registry.example.com","namespace":"platform","allowPull":true,"allowPush":true,"isDefaultPull":false,"isDefaultPush":true,"tlsVerify":true,"insecureHttp":false}`, sessionCookie, http.StatusCreated, nil)
+
+	var projectID string
+	postJSON(t, router, "/api/v1/image-projects", `{"name":"Node Runtime","imageType":"nodejs","imageName":"node-runtime","namespace":"platform","rootImageRef":"node:22-slim","rootImageSource":"external_image","defaultArchitecture":"amd64","labels":["node"],"description":"Base Node runtime."}`, sessionCookie, http.StatusCreated, func(rec *httptest.ResponseRecorder) {
+		body := decodeJSONBody(t, rec)
+		data := body["data"].(map[string]any)
+		projectID = data["id"].(string)
+	})
+
+	var rootNodeID string
+	getJSON(t, router, http.MethodGet, "/api/v1/image-projects/"+projectID+"/graph", "", sessionCookie, http.StatusOK, func(body map[string]any) {
+		data := body["data"].(map[string]any)
+		nodes := data["nodes"].([]any)
+		rootNodeID = nodes[0].(map[string]any)["id"].(string)
+	})
+
+	var taskID string
+	postJSON(t, router, "/api/v1/build-tasks", `{"projectId":"`+projectID+`","versionNodeId":"`+rootNodeID+`","architecture":"amd64","imageTag":"scheduler-root"}`, sessionCookie, http.StatusCreated, func(rec *httptest.ResponseRecorder) {
+		body := decodeJSONBody(t, rec)
+		data := body["data"].(map[string]any)
+		taskID = data["id"].(string)
+		if data["status"] != "queued" {
+			t.Fatalf("expected queued task, got %v", data["status"])
+		}
+	})
+
+	waitForBuildTaskStatus(t, router, taskID, sessionCookie, "push_success")
+}
+
 func newAuthTestRouter(t *testing.T) http.Handler {
 	t.Helper()
 	return newAuthTestRouterWithCSRF(t, false)
 }
 
 func newAuthTestRouterWithCSRF(t *testing.T, csrfEnabled bool) http.Handler {
+	t.Helper()
+	return newAuthTestRouterWithOptions(t, authTestRouterOptions{csrfEnabled: csrfEnabled})
+}
+
+func newAuthTestRouterWithScheduler(t *testing.T) http.Handler {
+	t.Helper()
+	runtimeCtx, runtimeCancel := context.WithCancel(context.Background())
+	t.Cleanup(runtimeCancel)
+	return newAuthTestRouterWithOptions(t, authTestRouterOptions{
+		runtimeContext:    runtimeCtx,
+		schedulerEnabled:  true,
+		schedulerInterval: 10 * time.Millisecond,
+	})
+}
+
+type authTestRouterOptions struct {
+	csrfEnabled       bool
+	schedulerEnabled  bool
+	schedulerInterval time.Duration
+	runtimeContext    context.Context
+}
+
+func newAuthTestRouterWithOptions(t *testing.T, opts authTestRouterOptions) http.Handler {
 	t.Helper()
 
 	tempDir := t.TempDir()
@@ -678,15 +822,18 @@ func newAuthTestRouterWithCSRF(t *testing.T, csrfEnabled bool) http.Handler {
 	})
 
 	router, err := New(Options{
-		Version:       "test",
-		DB:            store.DB,
-		DriverName:    store.DriverName,
-		SessionTTL:    cfg.Security.SessionTTL,
-		SecretKey:     cfg.Security.SecretKey,
-		CSRFEnabled:   csrfEnabled,
-		ContextDir:    cfg.Storage.ContextDir,
-		LogDir:        cfg.Storage.LogDir,
-		BuildExecutor: fakeBuildExecutor{},
+		Version:           "test",
+		DB:                store.DB,
+		DriverName:        store.DriverName,
+		SessionTTL:        cfg.Security.SessionTTL,
+		SecretKey:         cfg.Security.SecretKey,
+		CSRFEnabled:       opts.csrfEnabled,
+		ContextDir:        cfg.Storage.ContextDir,
+		LogDir:            cfg.Storage.LogDir,
+		BuildExecutor:     fakeBuildExecutor{},
+		SchedulerEnabled:  opts.schedulerEnabled,
+		SchedulerInterval: opts.schedulerInterval,
+		RuntimeContext:    opts.runtimeContext,
 	})
 	if err != nil {
 		t.Fatalf("new server: %v", err)
@@ -803,7 +950,7 @@ func decodeJSONBody(t *testing.T, rec *httptest.ResponseRecorder) map[string]any
 
 type fakeBuildExecutor struct{}
 
-func (fakeBuildExecutor) Build(ctx context.Context, task buildtask.BuildTask, host buildhost.BuildHost, contextPath string, logPath string) error {
+func (fakeBuildExecutor) Build(ctx context.Context, task buildtask.BuildTask, host buildhost.BuildHost, contextPath string, logPath string, pullRegistry *registry.Registry, pullSecret *registry.RegistrySecret) error {
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -812,6 +959,11 @@ func (fakeBuildExecutor) Build(ctx context.Context, task buildtask.BuildTask, ho
 
 	if _, err := os.Stat(filepath.Join(contextPath, "Dockerfile")); err != nil {
 		return err
+	}
+	if task.BuildOptions["contextFiles"] != "" {
+		if _, err := os.Stat(filepath.Join(contextPath, "app", "config.json")); err != nil {
+			return err
+		}
 	}
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o640)
 	if err != nil {
@@ -822,6 +974,12 @@ func (fakeBuildExecutor) Build(ctx context.Context, task buildtask.BuildTask, ho
 	credentialNote := ""
 	if host.ConnectionType == buildhost.ConnectionSSH && host.SSHCredential != nil && host.SSHCredential.PrivateKey != "" {
 		credentialNote = " with SSH credential"
+	}
+	if pullRegistry != nil {
+		credentialNote += " pulling from " + pullRegistry.Name
+	}
+	if pullSecret != nil {
+		credentialNote += " with pull credential"
 	}
 	_, err = logFile.WriteString("fake local build completed for " + task.ImageRef + " on " + host.Name + credentialNote + "\n")
 	return err
@@ -848,6 +1006,31 @@ func (fakeBuildExecutor) Push(ctx context.Context, task buildtask.BuildTask, hos
 	return buildtask.PushResult{
 		ImageID:   "sha256:fake-image-id",
 		Digest:    "sha256:fake-digest",
+		SizeBytes: &size,
+	}, nil
+}
+
+func (fakeBuildExecutor) Repush(ctx context.Context, operationID string, sourceImageRef string, targetImageRef string, host buildhost.BuildHost, pushRegistry registry.Registry, secret *registry.RegistrySecret, logPath string) (buildtask.PushResult, error) {
+	select {
+	case <-ctx.Done():
+		return buildtask.PushResult{}, ctx.Err()
+	default:
+	}
+
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o640)
+	if err != nil {
+		return buildtask.PushResult{}, err
+	}
+	defer logFile.Close()
+
+	_, err = logFile.WriteString("fake repush completed from " + sourceImageRef + " to " + targetImageRef + " using " + operationID + " on " + host.Name + " via " + pushRegistry.Name + "\n")
+	if err != nil {
+		return buildtask.PushResult{}, err
+	}
+	size := int64(84)
+	return buildtask.PushResult{
+		ImageID:   "sha256:fake-repush-image-id",
+		Digest:    "sha256:fake-repush-digest",
 		SizeBytes: &size,
 	}, nil
 }

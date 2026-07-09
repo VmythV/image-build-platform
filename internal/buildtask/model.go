@@ -99,15 +99,22 @@ type BuildTaskDTO struct {
 }
 
 type CreateInput struct {
-	ProjectID       string            `json:"projectId"`
-	VersionNodeID   string            `json:"versionNodeId"`
-	RegistryID      string            `json:"registryId"`
-	RequestedHostID string            `json:"requestedHostId"`
-	ImageName       string            `json:"imageName"`
-	ImageTag        string            `json:"imageTag"`
-	Architecture    string            `json:"architecture"`
-	BuildArgs       map[string]string `json:"buildArgs"`
-	BuildOptions    map[string]string `json:"buildOptions"`
+	ProjectID       string             `json:"projectId"`
+	VersionNodeID   string             `json:"versionNodeId"`
+	RegistryID      string             `json:"registryId"`
+	PullRegistryID  string             `json:"pullRegistryId"`
+	RequestedHostID string             `json:"requestedHostId"`
+	ImageName       string             `json:"imageName"`
+	ImageTag        string             `json:"imageTag"`
+	Architecture    string             `json:"architecture"`
+	BuildArgs       map[string]string  `json:"buildArgs"`
+	BuildOptions    map[string]string  `json:"buildOptions"`
+	ContextFiles    []ContextFileInput `json:"contextFiles"`
+}
+
+type ContextFileInput struct {
+	Path    string `json:"path"`
+	Content string `json:"content"`
 }
 
 type ListFilter struct {

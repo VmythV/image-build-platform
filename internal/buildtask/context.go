@@ -18,6 +18,7 @@ type contextMetadata struct {
 	TaskID         string `json:"taskId"`
 	DockerfileHash string `json:"dockerfileHash"`
 	Source         string `json:"source"`
+	ContextFiles   int    `json:"contextFiles"`
 	CreatedAt      string `json:"createdAt"`
 }
 
@@ -33,11 +34,16 @@ func (s Service) prepareBuildContext(task BuildTask) (PreparedContext, error) {
 	if err := os.WriteFile(filepath.Join(contextPath, "Dockerfile"), []byte(task.DockerfileSnapshot), 0o640); err != nil {
 		return PreparedContext{}, fmt.Errorf("write Dockerfile snapshot: %w", err)
 	}
+	contextFileCount, err := writeAdditionalContextFiles(contextPath, task.BuildOptions[buildOptionContextFiles])
+	if err != nil {
+		return PreparedContext{}, err
+	}
 
 	metadata := contextMetadata{
 		TaskID:         task.ID,
 		DockerfileHash: task.DockerfileHash,
 		Source:         "inline",
+		ContextFiles:   contextFileCount,
 		CreatedAt:      time.Now().UTC().Format(time.RFC3339),
 	}
 	metadataBytes, err := json.MarshalIndent(metadata, "", "  ")
@@ -58,6 +64,42 @@ func (s Service) prepareBuildContext(task BuildTask) (PreparedContext, error) {
 	}
 
 	return PreparedContext{ContextRef: contextPath, LogPath: logPath}, nil
+}
+
+func writeAdditionalContextFiles(contextPath string, raw string) (int, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, nil
+	}
+	var files []ContextFileInput
+	if err := json.Unmarshal([]byte(raw), &files); err != nil {
+		return 0, fmt.Errorf("decode context files: %w", err)
+	}
+	files, err := normalizeContextFiles(files)
+	if err != nil {
+		return 0, err
+	}
+	cleanContextPath, err := filepath.Abs(contextPath)
+	if err != nil {
+		return 0, err
+	}
+	for _, file := range files {
+		targetPath := filepath.Join(contextPath, filepath.FromSlash(file.Path))
+		cleanTargetPath, err := filepath.Abs(targetPath)
+		if err != nil {
+			return 0, err
+		}
+		if !strings.HasPrefix(cleanTargetPath, cleanContextPath+string(os.PathSeparator)) {
+			return 0, validationError("contextFiles path must stay inside the build context")
+		}
+		if err := os.MkdirAll(filepath.Dir(cleanTargetPath), 0o750); err != nil {
+			return 0, fmt.Errorf("create context file directory: %w", err)
+		}
+		if err := os.WriteFile(cleanTargetPath, []byte(file.Content), 0o640); err != nil {
+			return 0, fmt.Errorf("write context file %s: %w", file.Path, err)
+		}
+	}
+	return len(files), nil
 }
 
 func validateDockerfileSnapshot(value string) error {

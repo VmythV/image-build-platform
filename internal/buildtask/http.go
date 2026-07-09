@@ -35,6 +35,7 @@ func (h Handler) Routes() http.Handler {
 	r.Post("/{id}/cancel", h.cancel)
 	r.Post("/{id}/retry", h.retry)
 	r.Get("/{id}/logs/stream", h.streamLogs)
+	r.Get("/{id}/logs/download", h.downloadLogs)
 	r.Get("/{id}/logs", h.logs)
 	return r
 }
@@ -181,6 +182,25 @@ func (h Handler) logs(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (h Handler) downloadLogs(w http.ResponseWriter, r *http.Request) {
+	_, logPath, filename, err := h.service.LogFile(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		handleTaskError(w, err)
+		return
+	}
+	if _, err := os.Stat(logPath); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			handleTaskError(w, ErrLogsNotFound)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to open build task logs.", nil)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
+	http.ServeFile(w, r, logPath)
+}
+
 func (h Handler) streamLogs(w http.ResponseWriter, r *http.Request) {
 	task, logPath, filename, err := h.service.LogFile(r.Context(), chi.URLParam(r, "id"))
 	if err != nil {
@@ -206,8 +226,12 @@ func (h Handler) streamLogs(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Disposition", `inline; filename="`+filename+`"`)
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
+	if _, err := fmt.Fprint(w, "retry: 1000\n\n"); err != nil {
+		return
+	}
+	flushSSE(w)
 
-	offset := int64(0)
+	offset := parseInt64(r.URL.Query().Get("offset"))
 	lastHeartbeat := time.Now()
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
@@ -280,10 +304,25 @@ func writeLogStreamChunk(w http.ResponseWriter, logPath string, offset int64) (i
 	if len(data) == 0 {
 		return offset, nil
 	}
-	if err := writeSSEEvent(w, "log", string(data)); err != nil {
+	nextOffset := offset + int64(len(data))
+	payload, err := json.Marshal(LogChunkDTO{
+		Offset:     offset,
+		NextOffset: nextOffset,
+		Text:       string(data),
+	})
+	if err != nil {
 		return offset, err
 	}
-	return offset + int64(len(data)), nil
+	if err := writeSSEEvent(w, "log", string(payload)); err != nil {
+		return offset, err
+	}
+	return nextOffset, nil
+}
+
+type LogChunkDTO struct {
+	Offset     int64  `json:"offset"`
+	NextOffset int64  `json:"nextOffset"`
+	Text       string `json:"text"`
 }
 
 func writeSSEEvent(w http.ResponseWriter, event string, data string) error {
@@ -361,6 +400,17 @@ func parseInt(value string) int {
 	}
 	parsed, err := strconv.Atoi(value)
 	if err != nil {
+		return 0
+	}
+	return parsed
+}
+
+func parseInt64(value string) int64 {
+	if value == "" {
+		return 0
+	}
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || parsed < 0 {
 		return 0
 	}
 	return parsed

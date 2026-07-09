@@ -26,6 +26,32 @@ func (r Repository) CountUsers(ctx context.Context) (int, error) {
 	return count, nil
 }
 
+func (r Repository) ListUsers(ctx context.Context) ([]User, error) {
+	query := `
+SELECT id, username, display_name, password_hash, role, status, last_login_at, created_at, updated_at
+FROM users
+WHERE deleted_at IS NULL
+ORDER BY created_at DESC, username ASC`
+	rows, err := r.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("list users: %w", err)
+	}
+	defer rows.Close()
+
+	users := make([]User, 0)
+	for rows.Next() {
+		user, err := scanUserRows(rows)
+		if err != nil {
+			return nil, err
+		}
+		users = append(users, user)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate users: %w", err)
+	}
+	return users, nil
+}
+
 func (r Repository) CreateUser(ctx context.Context, user User) error {
 	query := `
 INSERT INTO users (
@@ -52,6 +78,15 @@ INSERT INTO users (
 	return nil
 }
 
+func (r Repository) FindUserByID(ctx context.Context, id string) (User, error) {
+	query := `
+SELECT id, username, display_name, password_hash, role, status, last_login_at, created_at, updated_at
+FROM users
+WHERE id = ` + placeholder(r.driverName, 1) + ` AND deleted_at IS NULL`
+
+	return r.scanUser(r.db.QueryRowContext(ctx, query, id))
+}
+
 func (r Repository) FindUserByUsername(ctx context.Context, username string) (User, error) {
 	query := `
 SELECT id, username, display_name, password_hash, role, status, last_login_at, created_at, updated_at
@@ -59,6 +94,34 @@ FROM users
 WHERE username = ` + placeholder(r.driverName, 1) + ` AND deleted_at IS NULL`
 
 	return r.scanUser(r.db.QueryRowContext(ctx, query, username))
+}
+
+func (r Repository) UpdateUser(ctx context.Context, user User) error {
+	query := `
+UPDATE users
+SET display_name = ` + placeholder(r.driverName, 1) + `,
+    role = ` + placeholder(r.driverName, 2) + `,
+    status = ` + placeholder(r.driverName, 3) + `,
+    updated_at = ` + placeholder(r.driverName, 4) + `
+WHERE id = ` + placeholder(r.driverName, 5) + ` AND deleted_at IS NULL`
+	result, err := r.db.ExecContext(ctx, query, user.DisplayName, user.Role, user.Status, formatTime(user.UpdatedAt), user.ID)
+	if err != nil {
+		return fmt.Errorf("update user: %w", err)
+	}
+	return requireRowsAffected(result)
+}
+
+func (r Repository) UpdatePassword(ctx context.Context, userID string, passwordHash string, updatedAt time.Time) error {
+	query := `
+UPDATE users
+SET password_hash = ` + placeholder(r.driverName, 1) + `,
+    updated_at = ` + placeholder(r.driverName, 2) + `
+WHERE id = ` + placeholder(r.driverName, 3) + ` AND deleted_at IS NULL`
+	result, err := r.db.ExecContext(ctx, query, passwordHash, formatTime(updatedAt), userID)
+	if err != nil {
+		return fmt.Errorf("update user password: %w", err)
+	}
+	return requireRowsAffected(result)
 }
 
 func (r Repository) FindUserBySessionHash(ctx context.Context, tokenHash string, now time.Time) (User, error) {
@@ -145,6 +208,50 @@ func (r Repository) scanUser(row *sql.Row) (User, error) {
 	user.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
 
 	return user, nil
+}
+
+func scanUserRows(rows *sql.Rows) (User, error) {
+	var user User
+	var lastLoginAt sql.NullString
+	var createdAt string
+	var updatedAt string
+
+	err := rows.Scan(
+		&user.ID,
+		&user.Username,
+		&user.DisplayName,
+		&user.PasswordHash,
+		&user.Role,
+		&user.Status,
+		&lastLoginAt,
+		&createdAt,
+		&updatedAt,
+	)
+	if err != nil {
+		return User{}, fmt.Errorf("scan user: %w", err)
+	}
+
+	if lastLoginAt.Valid {
+		parsed, err := time.Parse(time.RFC3339, lastLoginAt.String)
+		if err == nil {
+			user.LastLoginAt = &parsed
+		}
+	}
+	user.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
+	user.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
+
+	return user, nil
+}
+
+func requireRowsAffected(result sql.Result) error {
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return nil
+	}
+	if rowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 func placeholder(driverName string, position int) string {

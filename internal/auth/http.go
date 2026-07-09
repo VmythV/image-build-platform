@@ -35,6 +35,10 @@ func (h Handler) Routes() http.Handler {
 	r.Post("/auth/login", h.login)
 	r.Post("/auth/logout", h.logout)
 	r.Get("/auth/me", h.me)
+	r.Get("/users", h.listUsers)
+	r.Post("/users", h.createUser)
+	r.Put("/users/{id}", h.updateUser)
+	r.Post("/users/{id}/password", h.resetUserPassword)
 	return r
 }
 
@@ -115,12 +119,103 @@ func (h Handler) me(w http.ResponseWriter, r *http.Request) {
 	writeData(w, http.StatusOK, map[string]any{"user": ToUserDTO(user)})
 }
 
+func (h Handler) listUsers(w http.ResponseWriter, r *http.Request) {
+	if _, ok := h.requireAdmin(w, r); !ok {
+		return
+	}
+	users, err := h.service.ListUsers(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to list users.", nil)
+		return
+	}
+	data := make([]UserDTO, 0, len(users))
+	for _, user := range users {
+		data = append(data, ToUserDTO(user))
+	}
+	writeData(w, http.StatusOK, data)
+}
+
+func (h Handler) createUser(w http.ResponseWriter, r *http.Request) {
+	actor, ok := h.requireAdmin(w, r)
+	if !ok {
+		return
+	}
+	var req CreateUserInput
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	user, err := h.service.CreateUser(r.Context(), req, actor)
+	if err != nil {
+		handleServiceError(w, err, "Failed to create user.")
+		return
+	}
+	writeData(w, http.StatusCreated, ToUserDTO(user))
+}
+
+func (h Handler) updateUser(w http.ResponseWriter, r *http.Request) {
+	actor, ok := h.requireAdmin(w, r)
+	if !ok {
+		return
+	}
+	var req UpdateUserInput
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	user, err := h.service.UpdateUser(r.Context(), chi.URLParam(r, "id"), req, actor)
+	if err != nil {
+		handleServiceError(w, err, "Failed to update user.")
+		return
+	}
+	writeData(w, http.StatusOK, ToUserDTO(user))
+}
+
+func (h Handler) resetUserPassword(w http.ResponseWriter, r *http.Request) {
+	actor, ok := h.requireAdmin(w, r)
+	if !ok {
+		return
+	}
+	var req ResetPasswordInput
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	user, err := h.service.ResetPassword(r.Context(), chi.URLParam(r, "id"), req, actor)
+	if err != nil {
+		handleServiceError(w, err, "Failed to reset user password.")
+		return
+	}
+	writeData(w, http.StatusOK, ToUserDTO(user))
+}
+
 func (h Handler) userFromRequest(r *http.Request) (User, error) {
 	cookie, err := r.Cookie(SessionCookieName)
 	if err != nil {
 		return User{}, ErrUnauthenticated
 	}
 	return h.service.CurrentUser(r.Context(), cookie.Value)
+}
+
+func (h Handler) requireAdmin(w http.ResponseWriter, r *http.Request) (User, bool) {
+	user, err := h.userFromRequest(r)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, "UNAUTHENTICATED", "Authentication is required.", nil)
+		return User{}, false
+	}
+	if user.Role != RoleAdmin {
+		writeError(w, http.StatusForbidden, "FORBIDDEN", "Permission denied.", nil)
+		return User{}, false
+	}
+	return user, true
+}
+
+func handleServiceError(w http.ResponseWriter, err error, fallback string) {
+	switch {
+	case errors.Is(err, ErrNotFound):
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "User not found.", nil)
+	case errors.Is(err, ErrForbidden):
+		writeError(w, http.StatusForbidden, "FORBIDDEN", "Permission denied.", nil)
+	default:
+		writeError(w, http.StatusBadRequest, "VALIDATION_FAILED", err.Error(), map[string]string{"fallback": fallback})
+	}
 }
 
 func (h Handler) sessionCookie(token string, expiresAt time.Time) *http.Cookie {

@@ -149,6 +149,58 @@ WHERE id = ` + placeholder(r.driverName, 3) + ` AND project_id = ` + placeholder
 	return nil
 }
 
+func (r Repository) RecordPushEvent(ctx context.Context, event PushEvent) error {
+	query := `
+INSERT INTO artifact_push_events (
+	id, artifact_id, build_task_id, registry_id, status, error_message,
+	started_at, finished_at, created_by, created_at
+) VALUES (` + placeholders(r.driverName, 10) + `)`
+	_, err := r.db.ExecContext(
+		ctx,
+		query,
+		event.ID,
+		event.ArtifactID,
+		nullString(event.BuildTaskID),
+		event.RegistryID,
+		event.Status,
+		nullString(event.ErrorMessage),
+		formatTime(event.StartedAt),
+		nullTime(event.FinishedAt),
+		nullString(event.CreatedBy),
+		formatTime(event.CreatedAt),
+	)
+	if err != nil {
+		return fmt.Errorf("create artifact push event: %w", err)
+	}
+	return nil
+}
+
+func (r Repository) Archive(ctx context.Context, artifactID string, archivedAt time.Time) error {
+	query := `
+UPDATE image_artifacts
+SET status = ` + placeholder(r.driverName, 1) + `,
+    updated_at = ` + placeholder(r.driverName, 2) + `
+WHERE id = ` + placeholder(r.driverName, 3) + ` AND deleted_at IS NULL`
+	result, err := r.db.ExecContext(ctx, query, StatusArchived, formatTime(archivedAt), artifactID)
+	if err != nil {
+		return fmt.Errorf("archive image artifact: %w", err)
+	}
+	return requireRowsAffected(result)
+}
+
+func (r Repository) Deprecate(ctx context.Context, artifactID string, deprecatedAt time.Time) error {
+	query := `
+UPDATE image_artifacts
+SET deprecated = ` + placeholder(r.driverName, 1) + `,
+    updated_at = ` + placeholder(r.driverName, 2) + `
+WHERE id = ` + placeholder(r.driverName, 3) + ` AND deleted_at IS NULL`
+	result, err := r.db.ExecContext(ctx, query, boolInt(true), formatTime(deprecatedAt), artifactID)
+	if err != nil {
+		return fmt.Errorf("deprecate image artifact: %w", err)
+	}
+	return requireRowsAffected(result)
+}
+
 func (r Repository) filterWhere(filter ListFilter) (string, []any) {
 	clauses := []string{"a.deleted_at IS NULL"}
 	args := make([]any, 0, 3)
@@ -304,4 +356,15 @@ func boolInt(value bool) int {
 
 func formatTime(value time.Time) string {
 	return value.UTC().Format(time.RFC3339)
+}
+
+func requireRowsAffected(result sql.Result) error {
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return nil
+	}
+	if rowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
 }

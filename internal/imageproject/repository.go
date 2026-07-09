@@ -379,8 +379,9 @@ func (r Repository) projectWhere(filter ProjectFilter) (string, []any) {
 		clauses = append(clauses, "p.image_type = "+placeholder(r.driverName, len(args)))
 	}
 	if strings.TrimSpace(filter.Keyword) != "" {
-		args = append(args, "%"+strings.ToLower(strings.TrimSpace(filter.Keyword))+"%")
-		clauses = append(clauses, "(LOWER(p.name) LIKE "+placeholder(r.driverName, len(args))+" OR LOWER(p.image_name) LIKE "+placeholder(r.driverName, len(args))+")")
+		keyword := "%" + strings.ToLower(strings.TrimSpace(filter.Keyword)) + "%"
+		args = append(args, keyword, keyword)
+		clauses = append(clauses, "(LOWER(p.name) LIKE "+placeholder(r.driverName, len(args)-1)+" OR LOWER(p.image_name) LIKE "+placeholder(r.driverName, len(args))+")")
 	}
 	return "WHERE " + strings.Join(clauses, " AND "), args
 }
