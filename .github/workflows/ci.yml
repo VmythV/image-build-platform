@@ -66,6 +66,9 @@ jobs:
       - name: Build application
         run: make build
 
+      - name: Run backup restore smoke test
+        run: bash scripts/smoke-backup-restore.sh
+
   compose:
     name: Compose Config
     runs-on: ubuntu-latest
@@ -107,6 +110,9 @@ jobs:
         run: |
           version="ci-${GITHUB_SHA::7}"
           make release VERSION="${version}"
+
+      - name: Verify release package
+        run: bash scripts/check-release-package.sh dist/release/*.tar.gz
 
       - name: Upload release smoke artifact
         uses: actions/upload-artifact@v6

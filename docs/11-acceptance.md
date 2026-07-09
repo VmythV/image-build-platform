@@ -102,8 +102,10 @@
 - pull request 会运行 CI。
 - CI 包含 `make test`。
 - CI 包含 `make build`。
+- CI 包含备份和恢复烟测。
 - CI 校验所有 compose 文件。
 - CI 执行 Docker build smoke。
+- CI 校验 release 包关键文件和 checksums。
 - tag `v*` 会创建或更新 GitHub Release。
 - tag `v*` 会发布 Linux `amd64` 和 `arm64` 二进制包。
 - tag `v*` 会发布 GHCR 多架构镜像。
