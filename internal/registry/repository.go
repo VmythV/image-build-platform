@@ -78,7 +78,7 @@ WHERE r.is_default_push = ` + placeholder(r.driverName, 1) + `
   AND r.deleted_at IS NULL
 ORDER BY r.created_at DESC
 LIMIT 1`
-	registry, err := scanRegistry(r.db.QueryRowContext(ctx, query, true, true))
+	registry, err := scanRegistry(r.db.QueryRowContext(ctx, query, boolInt(true), boolInt(true)))
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Registry{}, ErrNotFound
@@ -106,12 +106,12 @@ INSERT INTO registries (
 		nullString(registry.Namespace),
 		nullString(registry.Region),
 		nullString(registry.CredentialID),
-		registry.AllowPull,
-		registry.AllowPush,
-		registry.IsDefaultPull,
-		registry.IsDefaultPush,
-		registry.TLSVerify,
-		registry.InsecureHTTP,
+		boolInt(registry.AllowPull),
+		boolInt(registry.AllowPush),
+		boolInt(registry.IsDefaultPull),
+		boolInt(registry.IsDefaultPush),
+		boolInt(registry.TLSVerify),
+		boolInt(registry.InsecureHTTP),
 		registry.Status,
 		nullTime(registry.LastCheckedAt),
 		nullString(registry.LastCheckResult),
@@ -158,12 +158,12 @@ WHERE id = ` + placeholder(r.driverName, 15) + ` AND deleted_at IS NULL`
 		nullString(registry.Namespace),
 		nullString(registry.Region),
 		nullString(registry.CredentialID),
-		registry.AllowPull,
-		registry.AllowPush,
-		registry.IsDefaultPull,
-		registry.IsDefaultPush,
-		registry.TLSVerify,
-		registry.InsecureHTTP,
+		boolInt(registry.AllowPull),
+		boolInt(registry.AllowPush),
+		boolInt(registry.IsDefaultPull),
+		boolInt(registry.IsDefaultPush),
+		boolInt(registry.TLSVerify),
+		boolInt(registry.InsecureHTTP),
 		registry.Status,
 		formatTime(registry.UpdatedAt),
 		registry.ID,
@@ -234,7 +234,7 @@ func (r Repository) ClearDefaultPush(ctx context.Context, exceptID string) error
 
 func (r Repository) clearDefault(ctx context.Context, column string, exceptID string) error {
 	query := "UPDATE registries SET " + column + " = " + placeholder(r.driverName, 1) + " WHERE id != " + placeholder(r.driverName, 2) + " AND deleted_at IS NULL"
-	if _, err := r.db.ExecContext(ctx, query, false, exceptID); err != nil {
+	if _, err := r.db.ExecContext(ctx, query, boolInt(false), exceptID); err != nil {
 		return fmt.Errorf("clear registry default %s: %w", column, err)
 	}
 	return nil
@@ -281,6 +281,7 @@ func scanRegistry(row rowScanner) (Registry, error) {
 	var createdBy sql.NullString
 	var createdAt string
 	var updatedAt string
+	var allowPull, allowPush, isDefaultPull, isDefaultPush, tlsVerify, insecureHTTP int
 
 	err := row.Scan(
 		&registry.ID,
@@ -292,12 +293,12 @@ func scanRegistry(row rowScanner) (Registry, error) {
 		&credentialID,
 		&credentialName,
 		&credentialFingerprint,
-		&registry.AllowPull,
-		&registry.AllowPush,
-		&registry.IsDefaultPull,
-		&registry.IsDefaultPush,
-		&registry.TLSVerify,
-		&registry.InsecureHTTP,
+		&allowPull,
+		&allowPush,
+		&isDefaultPull,
+		&isDefaultPush,
+		&tlsVerify,
+		&insecureHTTP,
 		&registry.Status,
 		&lastCheckedAt,
 		&lastCheckResult,
@@ -315,6 +316,12 @@ func scanRegistry(row rowScanner) (Registry, error) {
 	registry.CredentialID = credentialID.String
 	registry.CredentialName = credentialName.String
 	registry.CredentialFingerprint = credentialFingerprint.String
+	registry.AllowPull = allowPull != 0
+	registry.AllowPush = allowPush != 0
+	registry.IsDefaultPull = isDefaultPull != 0
+	registry.IsDefaultPush = isDefaultPush != 0
+	registry.TLSVerify = tlsVerify != 0
+	registry.InsecureHTTP = insecureHTTP != 0
 	registry.LastCheckResult = lastCheckResult.String
 	registry.LastError = lastError.String
 	registry.CreatedBy = createdBy.String
@@ -391,4 +398,11 @@ func nullTime(value *time.Time) any {
 		return nil
 	}
 	return formatTime(*value)
+}
+
+func boolInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }

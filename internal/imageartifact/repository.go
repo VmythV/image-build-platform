@@ -100,9 +100,9 @@ INSERT INTO image_artifacts (
 		artifact.Architecture,
 		nullInt64Ptr(artifact.SizeBytes),
 		artifact.Status,
-		artifact.Pushed,
+		boolInt(artifact.Pushed),
 		nullTime(artifact.PushedAt),
-		artifact.Deprecated,
+		boolInt(artifact.Deprecated),
 		formatTime(artifact.CreatedAt),
 		formatTime(artifact.UpdatedAt),
 		nil,
@@ -189,6 +189,7 @@ func scanArtifact(row rowScanner) (Artifact, error) {
 	var sizeBytes sql.NullInt64
 	var pushedAt sql.NullString
 	var createdAt, updatedAt string
+	var pushed, deprecated int
 
 	err := row.Scan(
 		&artifact.ID,
@@ -206,9 +207,9 @@ func scanArtifact(row rowScanner) (Artifact, error) {
 		&artifact.Architecture,
 		&sizeBytes,
 		&artifact.Status,
-		&artifact.Pushed,
+		&pushed,
 		&pushedAt,
-		&artifact.Deprecated,
+		&deprecated,
 		&createdAt,
 		&updatedAt,
 	)
@@ -222,6 +223,8 @@ func scanArtifact(row rowScanner) (Artifact, error) {
 		value := sizeBytes.Int64
 		artifact.SizeBytes = &value
 	}
+	artifact.Pushed = pushed != 0
+	artifact.Deprecated = deprecated != 0
 	artifact.PushedAt = parseOptionalTime(pushedAt)
 	artifact.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
 	artifact.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
@@ -290,6 +293,13 @@ func nullInt64Ptr(value *int64) any {
 		return nil
 	}
 	return *value
+}
+
+func boolInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 func formatTime(value time.Time) string {

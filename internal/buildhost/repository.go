@@ -113,7 +113,7 @@ INSERT INTO build_hosts (
 		nullString(host.Architecture),
 		nullString(host.OS),
 		nullString(host.DockerVersion),
-		host.BuildkitSupported,
+		boolInt(host.BuildkitSupported),
 		labels,
 		host.MaxConcurrency,
 		host.CurrentRunning,
@@ -172,7 +172,7 @@ WHERE id = ` + placeholder(r.driverName, 14) + ` AND deleted_at IS NULL`
 		nullString(host.CredentialID),
 		nullString(host.DockerEndpoint),
 		nullString(host.DockerCommand),
-		false,
+		boolInt(false),
 		labels,
 		host.MaxConcurrency,
 		host.Status,
@@ -210,7 +210,7 @@ WHERE id = ` + placeholder(r.driverName, 10) + ` AND deleted_at IS NULL`
 		nullString(result.Architecture),
 		nullString(result.OS),
 		nullString(result.DockerVersion),
-		result.BuildkitSupported,
+		boolInt(result.BuildkitSupported),
 		result.Status,
 		formatTime(checkedAt),
 		rawResult,
@@ -304,6 +304,7 @@ func scanHost(row rowScanner) (BuildHost, error) {
 	var createdBy sql.NullString
 	var createdAt string
 	var updatedAt string
+	var buildkitSupported int
 
 	err := row.Scan(
 		&host.ID,
@@ -319,7 +320,7 @@ func scanHost(row rowScanner) (BuildHost, error) {
 		&architecture,
 		&osName,
 		&dockerVersion,
-		&host.BuildkitSupported,
+		&buildkitSupported,
 		&labels,
 		&host.MaxConcurrency,
 		&host.CurrentRunning,
@@ -347,6 +348,7 @@ func scanHost(row rowScanner) (BuildHost, error) {
 	host.Architecture = architecture.String
 	host.OS = osName.String
 	host.DockerVersion = dockerVersion.String
+	host.BuildkitSupported = buildkitSupported != 0
 	host.LastCheckResult = lastCheckResult.String
 	host.LastError = lastError.String
 	host.CreatedBy = createdBy.String
@@ -445,4 +447,11 @@ func nullTime(value *time.Time) any {
 		return nil
 	}
 	return formatTime(*value)
+}
+
+func boolInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }
