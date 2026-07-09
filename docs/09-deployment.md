@@ -577,6 +577,20 @@ tar -xzf ibp-backup-20260707100000.tar.gz -C /opt/image-build-platform
 systemctl start image-build-platform
 ```
 
+发布包内也提供恢复脚本，恢复前会把当前 `config.yaml` 和 `data` 打成 safety backup：
+
+```bash
+systemctl stop image-build-platform
+APP_DIR=/opt/image-build-platform BACKUP_FILE=/path/to/ibp-backup-20260707100000.tar.gz ./scripts/restore.sh
+systemctl start image-build-platform
+```
+
+源码检出环境可以使用 Make 目标：
+
+```bash
+BACKUP_FILE=/path/to/ibp-backup-20260707100000.tar.gz make restore
+```
+
 恢复后检查：
 
 - 服务能启动。
